@@ -1,0 +1,43 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# DUALCODEC CODEC CONFIG
+#
+# Architecture: SEANet encoder/decoder + w2v-bert-2.0 semantic encoder +
+#               Split-RVQ (1 semantic + N acoustic codebooks)
+# Pretrained:   amphion/dualcodec (12hz_v1 or 25hz_v1)
+# Training:     Adversarial + w2v-bert-2.0 semantic supervision
+# Paper:        Li et al., "DualCodec: A Low-Frame-Rate, Semantically-Enhanced
+#               Neural Audio Codec", Interspeech 2025
+# ══════════════════════════════════════════════════════════════════════════════
+
+codec:
+  name: "dualcodec"
+  pretrained: "12hz_v1"        # Model ID: "12hz_v1" or "25hz_v1".
+  sample_rate: 24000
+  frame_rate: 12.5             # 12.5Hz for 12hz_v1, 25Hz for 25hz_v1.
+  num_codebooks: 8             # 1 semantic (16384 vocab) + 7 acoustic (4096 vocab).
+  latency_ms: 80
+  params_millions: 200         # Approximate, includes w2v-bert-2.0 encoder.
+
+  training:
+    micro_batch_size: 32       # Lower than Mimi due to w2v-bert-2.0 memory.
+    segment_s: 5.0             # Shorter default for DualCodec.
+    freeze_encoder_steps: 0
+    unfreeze_layers: "all"
+
+    # DualCodec uses accelerate + Hydra for training.
+    # These are passed to `accelerate launch train.py`.
+    accelerate_config: null    # Path to accelerate config. null = auto.
+    hydra_config: "dualcodec_ft_12hzv1"  # Hydra config name from DualCodec repo.
+
+  losses:
+    reconstruction: "l1"
+    reconstruction_weight: 1.0
+    adversarial: true
+    adversarial_weight: 0.1
+    feature_matching: true
+    feature_matching_weight: 2.0
+    w2vbert_distillation: true  # DualCodec-specific: w2v-bert-2.0 semantic loss.
+    w2vbert_distillation_weight: 1.0
+    commit_loss_weight: 0.25
+
+  flash_attention: true

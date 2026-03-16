@@ -1,0 +1,115 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# WANDB SWEEP: DualCodec hyperparameter search
+#
+# Strategy: Bayesian optimization with Hyperband early termination.
+# Budget:   40-60 runs. Each run trains for max_steps=5000 (fixed for fair
+#           comparison). Hyperband kills underperforming runs at checkpoints.
+# Seed:     42 (fixed). Bootstrap eval provides error bars.
+#
+# Usage:
+#   wandb sweep configs/sweeps/dualcodec_sweep.yaml
+#   wandb agent <sweep_id>
+#
+# Or via convenience script:
+#   bash scripts/run_sweep.sh dualcodec
+#
+# After sweep completes, extract best config:
+#   uv run python scripts/analyze_sweep.py --sweep-id <id> \
+#       --output configs/experiments/dualcodec_turkish_sample_best.yaml
+#
+# See OPTIMIZERS.md for details on each optimizer and its sweep behavior.
+# ══════════════════════════════════════════════════════════════════════════════
+
+program: train/sweep_agent.py
+name: dualcodec-hp-sweep
+method: bayes
+
+metric:
+  goal: minimize
+  name: val_loss
+
+# Hyperband early termination: kill bad runs early to save GPU hours.
+# Brackets at ~step 556 and ~step 1667 (with eta=3, s=2).
+# Runs must survive to step 5000 to be considered for the final ranking.
+early_terminate:
+  type: hyperband
+  min_iter: 500                # Don't kill anything before step 500.
+  eta: 3                       # Reduction factor per bracket.
+  s: 2                         # Number of brackets.
+
+parameters:
+  # ── Fixed: codec and dataset ───────────────────────────────────────────
+  codec:
+    value: "dualcodec"
+  dataset_config:
+    value: "configs/datasets/turkish_sample.yaml"
+
+  # ── Optimizer (8 options, see OPTIMIZERS.md) ───────────────────────────
+  optimizer:
+    values: ["adamw", "radam", "lion", "prodigy", "schedulefree_adamw", "soap", "adan", "muon"]
+
+  # ── Learning rate ──────────────────────────────────────────────────────
+  # Log-uniform is optimal for LR search. Wide range covers AdamW-scale
+  # (1e-5 to 1e-3) and Muon's SGD-scale (0.01 to 0.1).
+  # Ignored by Prodigy (auto-estimated).
+  learning_rate:
+    distribution: log_uniform_values
+    min: !!float 1e-5
+    max: !!float 1e-1
+
+  # ── Weight decay ───────────────────────────────────────────────────────
+  # Lion needs 3-10x higher than AdamW. Sweep agent adjusts automatically.
+  weight_decay:
+    values: [0.0, 0.01, 0.05, 0.1, 0.3]
+
+  # ── Adam beta2 ─────────────────────────────────────────────────────────
+  # Lower beta2 can help GAN training stability.
+  beta2:
+    values: [0.95, 0.99, 0.999]
+
+  # ── Scheduler ──────────────────────────────────────────────────────────
+  # Ignored by Prodigy and Schedule-Free (they handle scheduling internally).
+  scheduler:
+    values: ["cosine", "linear", "constant"]
+
+  # ── Warmup ─────────────────────────────────────────────────────────────
+  # Ignored by Prodigy, Schedule-Free, and RAdam (reduced importance).
+  warmup_steps:
+    values: [0, 100, 500, 1000]
+
+  # ── Data augmentation ──────────────────────────────────────────────────
+  augmentation_preset:
+    values: ["none", "light", "heavy"]
+
+  # ── Segment length ─────────────────────────────────────────────────────
+  segment_s:
+    values: [2.0, 5.0, 10.0]
+
+  # ── Discriminator settings ─────────────────────────────────────────────
+  disc_lr_ratio:
+    values: [0.1, 0.25, 0.5, 1.0]
+
+  r1_penalty:
+    values: [0.0, 1.0, 10.0, 50.0]
+
+  disc_warmup_steps:
+    values: [0, 250, 500, 1000]
+
+  # ── Regularization ─────────────────────────────────────────────────────
+  ema_decay:
+    values: [0.99, 0.999, 0.9999]
+
+  freeze_encoder_steps:
+    values: [0, 500, 2000]
+
+  # ── Fixed training budget ──────────────────────────────────────────────
+  max_steps:
+    value: 5000
+
+command:
+  - ${env}
+  - uv
+  - run
+  - python
+  - ${program}
+  - ${args_json_file}

@@ -1,0 +1,42 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: Fine-tune DualCodec on ~90h Hindi
+#
+# Purpose: Phase 2 -- full-scale training on Hindi conversational speech.
+# Codec:   DualCodec (amphion/dualcodec 12hz_v1, ~200M params, 12.5Hz,
+#          8 codebooks: 1 semantic + 7 acoustic)
+# Dataset: Hindi (~90h, tiny-aya-translate/hinglish-casual, private HF repo)
+#
+# Prerequisites:
+#   Run `huggingface-cli login` with your team's token before training.
+#
+# Usage:
+#   uv run python train/train_dualcodec.py --config configs/experiments/dualcodec_hindi.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+
+_bases_:
+  - "../base.yaml"
+  - "../codecs/dualcodec.yaml"
+  - "../datasets/hindi.yaml"
+
+# ── Overrides for this experiment ────────────────────────────────────────────
+
+training:
+  max_steps: 80000             # DualCodec trains slightly fewer steps than Mimi.
+  eval_every: 2000
+  save_every: 5000
+
+optimizer:
+  lr: !!float 2e-4
+
+augmentation:
+  preset: "light"              # Light augmentation -- large dataset provides
+                               # sufficient diversity on its own.
+
+early_stopping:
+  patience: 5
+
+wandb:
+  tags: ["dualcodec", "hindi", "phase2"]
+  run_name: "dualcodec-hindi"
+
+output_dir: "outputs/dualcodec_hindi"

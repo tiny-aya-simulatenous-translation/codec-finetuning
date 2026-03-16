@@ -1,0 +1,40 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: Fine-tune Mimi on 3.1h Turkish sample
+#
+# Purpose: Phase 1 pipeline validation -- verify everything works end-to-end.
+# Codec:   Mimi (kyutai/mimi, 96M params, 12.5Hz, 8 codebooks)
+# Dataset: Turkish sample (3.1h, MagicHub ASR-STurkDuSC)
+#
+# Usage:
+#   uv run python train/train_mimi.py --config configs/experiments/mimi_turkish_sample.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+
+_bases_:
+  - "../base.yaml"
+  - "../codecs/mimi.yaml"
+  - "../datasets/turkish_sample.yaml"
+
+# ── Overrides for this experiment ────────────────────────────────────────────
+
+training:
+  max_steps: 5000              # Short run for pipeline validation.
+  eval_every: 250              # Frequent eval on small data.
+  save_every: 500
+
+optimizer:
+  lr: !!float 1e-4
+
+augmentation:
+  preset: "heavy"              # Aggressive augmentation for 3.1h dataset.
+
+ema:
+  decay: 0.9999               # Slower EMA for small data.
+
+early_stopping:
+  patience: 10                 # More patience on tiny dataset.
+
+wandb:
+  tags: ["mimi", "turkish", "sample", "phase1"]
+  run_name: "mimi-tr-sample"
+
+output_dir: "outputs/mimi_turkish_sample"

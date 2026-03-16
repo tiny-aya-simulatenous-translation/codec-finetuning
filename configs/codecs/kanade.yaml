@@ -1,0 +1,42 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# KANADE CODEC CONFIG
+#
+# Architecture: WavLM-base+ content encoder + single-layer VQ +
+#               Mel decoder + separate vocoder (Vocos or HiFT)
+# Pretrained:   frothywater/kanade-25hz-clean (142M params, 24kHz, 25Hz)
+# Training:     Lightning-based, 2-stage: pretrain (reconstruction) then
+#               post-train (GAN with discriminator)
+# Paper:        "Kanade: A Simple Disentangled Tokenizer for Spoken Language
+#               Modeling", 2025
+# ══════════════════════════════════════════════════════════════════════════════
+
+codec:
+  name: "kanade"
+  pretrained: "frothywater/kanade-25hz-clean"  # HuggingFace repo ID.
+  sample_rate: 24000
+  frame_rate: 25.0             # 25Hz token rate. Also available: 12.5Hz variant.
+  num_codebooks: 1             # Single-layer VQ (12800 vocab).
+  latency_ms: 40               # 1/25Hz = 40ms frame size.
+  params_millions: 142         # Including HiFT vocoder.
+
+  training:
+    micro_batch_size: 64       # Kanade is lighter weight than Mimi/DualCodec.
+    segment_s: 5.0
+    freeze_encoder_steps: 0
+    unfreeze_layers: "all"
+
+    # Kanade uses Lightning CLI for training.
+    lightning_config: null     # Path to Lightning YAML. null = auto-generated.
+    vocoder: "hift"            # Options: "vocos", "hift". HiFT has better quality.
+
+  losses:
+    reconstruction: "mel_l1"   # Kanade decodes to mel spectrogram, not waveform.
+    reconstruction_weight: 1.0
+    adversarial: true          # Post-training stage uses GAN loss.
+    adversarial_weight: 0.1
+    feature_matching: true
+    feature_matching_weight: 2.0
+    wavlm_distillation: false  # Kanade uses WavLM as encoder, not distillation target.
+    commit_loss_weight: 0.25   # VQ commitment loss.
+
+  flash_attention: true        # Used in WavLM content encoder's local attention.

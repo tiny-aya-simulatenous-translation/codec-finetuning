@@ -1,0 +1,38 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: Fine-tune DualCodec on 3.1h Turkish sample
+#
+# Purpose: Phase 1 pipeline validation -- verify everything works end-to-end.
+# Codec:   DualCodec (amphion/dualcodec 12hz_v1, ~200M params, 12.5Hz,
+#          8 codebooks: 1 semantic + 7 acoustic)
+# Dataset: Turkish sample (3.1h, MagicHub ASR-STurkDuSC)
+#
+# Usage:
+#   uv run python train/train_dualcodec.py --config configs/experiments/dualcodec_turkish_sample.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+
+_bases_:
+  - "../base.yaml"
+  - "../codecs/dualcodec.yaml"
+  - "../datasets/turkish_sample.yaml"
+
+# ── Overrides for this experiment ────────────────────────────────────────────
+
+training:
+  max_steps: 5000              # Short run for pipeline validation.
+  eval_every: 250              # Frequent eval on small data.
+  save_every: 500
+
+optimizer:
+  lr: !!float 1e-4
+
+augmentation:
+  preset: "heavy"              # Aggressive augmentation for 3.1h dataset.
+
+early_stopping:
+  patience: 10                 # More patience on tiny dataset.
+
+wandb:
+  tags: ["dualcodec", "turkish", "sample", "phase1"]
+  run_name: "dualcodec-tr-sample"
+
+output_dir: "outputs/dualcodec_turkish_sample"

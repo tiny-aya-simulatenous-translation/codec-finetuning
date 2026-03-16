@@ -1,0 +1,39 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# TURKISH FULL DATASET -- ~100 hours (Phase 2, placeholder)
+#
+# TODO: Update fields marked with "TODO" when the full dataset is available.
+# This config is a placeholder. Copy turkish_sample.yaml as a starting point
+# and update paths, stats, and split ratios.
+# ══════════════════════════════════════════════════════════════════════════════
+
+dataset:
+  name: "turkish_full"
+  language: "tr"
+  source: "local"              # TODO: Change to "huggingface" if hosted on HF.
+  local_raw_dir: "data/turkish_full_raw"  # TODO: Path to full dataset.
+
+  audio_column: null
+  text_column: null
+  speaker_column: null
+  duration_column: null
+
+  num_examples: null           # TODO: Total utterance count.
+  estimated_hours: 100         # TODO: Actual hours.
+
+  target_sr: 24000
+  original_sr: null            # TODO: Set if known, or null for auto-detection.
+  mono: true
+
+  splits:
+    method: "speaker_disjoint"
+    train_ratio: 0.9           # More data -> can afford smaller val/test ratio.
+    val_ratio: 0.05
+    test_ratio: 0.05
+    min_speaker_utterances: 5
+
+  filters:
+    min_duration_s: 0.5
+    max_duration_s: 30.0
+    max_clip_ratio: 0.05
+
+  local_dir: "data/turkish_full"

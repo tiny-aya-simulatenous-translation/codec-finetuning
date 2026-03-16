@@ -1,0 +1,116 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# BASE CONFIG -- Shared defaults for all codecs and datasets.
+#
+# Every field is documented with a description and valid range.
+# Override any field in experiment configs via the _bases_ merging system.
+#
+# Usage:
+#   This file is not used directly. It is referenced as a base in experiment
+#   configs, e.g.:
+#     _bases_:
+#       - "../base.yaml"
+#       - "../codecs/mimi.yaml"
+#       - "../datasets/turkish_sample.yaml"
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Optimizer ────────────────────────────────────────────────────────────────
+# See OPTIMIZERS.md for detailed comparison of all 8 supported optimizers.
+optimizer:
+  name: "adamw"                # Options: "adamw", "radam", "lion", "prodigy",
+                               #          "schedulefree_adamw", "soap", "adan", "muon"
+  lr: !!float 1e-4             # Peak learning rate. Range: [1e-6, 1e-1].
+                               # Ignored by Prodigy (auto-estimated).
+                               # Muon uses SGD-scale LR (0.01-0.1).
+  betas: [0.9, 0.999]         # Adam betas. beta2 range: [0.9, 0.999].
+                               # Adan uses 3 betas: [beta1, beta2, beta3].
+  weight_decay: 0.01           # L2 regularization. Range: [0.0, 0.3].
+                               # Lion needs 3-10x higher (0.03-0.3).
+
+# ── Scheduler ────────────────────────────────────────────────────────────────
+# Ignored by Prodigy and Schedule-Free (they handle scheduling internally).
+scheduler:
+  name: "cosine"               # Options: "cosine", "linear", "constant"
+  warmup_steps: 500            # LR warmup from 0 -> peak. Range: [0, 5000].
+  min_lr_ratio: 0.01           # Final LR = peak * ratio. Range: [0.0, 0.1].
+
+# ── Training ─────────────────────────────────────────────────────────────────
+training:
+  max_steps: 10000             # Total training steps. Range: [1000, 500000].
+  eval_every: 500              # Validate every N steps.
+  save_every: 1000             # Checkpoint every N steps.
+  log_every: 50                # WandB log every N steps.
+  audio_log_every: 500         # Log reconstructed audio samples to WandB.
+  grad_accum_steps: 4          # Effective batch = micro_batch * grad_accum.
+  max_grad_norm: 1.0           # Gradient clipping norm. Range: [0.1, 10.0].
+  seed: 42                     # Random seed for reproducibility.
+  precision: "bf16"            # Options: "bf16", "fp32". Always bf16 on H100.
+  compile: true                # torch.compile the model.
+  compile_mode: "reduce-overhead"  # Options: "default", "reduce-overhead",
+                               #          "max-autotune".
+
+# ── EMA (Exponential Moving Average) ────────────────────────────────────────
+ema:
+  enabled: true
+  decay: 0.999                 # Range: [0.99, 0.9999].
+                               # Higher = smoother, slower adaptation.
+  start_step: 1000             # Begin EMA after N steps.
+
+# ── Data Augmentation ────────────────────────────────────────────────────────
+# Three presets: "none", "light", "heavy". Use "custom" to set values manually.
+augmentation:
+  preset: "light"              # Options: "none", "light", "heavy", "custom".
+  # Preset definitions:
+  #   none:  all augmentation disabled
+  #   light: speed_perturb=[0.95,1.05], gain_db=[-3,3]
+  #   heavy: speed_perturb=[0.9,1.1], pitch_shift=[-2,2],
+  #          noise_snr=[10,30], gain_db=[-6,3], chunk_reverse_prob=0.1
+  #   custom: uses the values below directly
+  speed_perturb: [0.95, 1.05]  # Speed factor range. null to disable.
+  pitch_shift: null            # Semitones range. null to disable.
+  noise_snr: null              # Additive noise SNR in dB. null to disable.
+  gain_db: [-3, 3]             # Random gain in dB. null to disable.
+  chunk_reverse_prob: 0.0      # Probability of reversing a random chunk.
+
+# ── Curriculum Learning ──────────────────────────────────────────────────────
+curriculum:
+  enabled: false               # Start with short segments, increase over time.
+  initial_segment_s: 2.0       # Starting segment length in seconds.
+  final_segment_s: 10.0        # Final segment length in seconds.
+  ramp_steps: 3000             # Steps to linearly ramp from initial to final.
+
+# ── Discriminator ────────────────────────────────────────────────────────────
+discriminator:
+  warmup_steps: 500            # Delay discriminator gradient for N steps.
+                               # Lets generator produce non-garbage audio first.
+  lr_ratio: 0.5                # disc_lr = generator_lr * ratio. Range: [0.1, 1.0].
+  r1_penalty: 10.0             # R1 gradient penalty weight. Range: [0.0, 100.0].
+                               # Higher = more regularization on discriminator.
+
+# ── Loss Balancer ────────────────────────────────────────────────────────────
+loss_balancer:
+  enabled: true                # AudioCraft-style gradient-normalized multi-loss.
+  ema_decay: 0.999             # EMA for tracking gradient norms of each loss.
+
+# ── WandB Logging ────────────────────────────────────────────────────────────
+wandb:
+  enabled: true
+  project: "codec-finetuning"
+  tags: []                     # Overridden per experiment.
+  run_name: null               # Auto-generated if null.
+
+# ── Early Stopping ───────────────────────────────────────────────────────────
+early_stopping:
+  enabled: true
+  patience: 5                  # Stop after N evals with no val improvement.
+  metric: "val_loss"           # Metric to monitor.
+  mode: "min"                  # "min" for loss, "max" for PESQ etc.
+
+# ── Bootstrap Evaluation ─────────────────────────────────────────────────────
+bootstrap_eval:
+  enabled: true
+  n_resamples: 20              # Number of bootstrap resamples for error bars.
+                               # Each resample draws len(test_set) with replacement.
+  confidence: 0.95             # Confidence interval level.
+
+# ── Output ───────────────────────────────────────────────────────────────────
+output_dir: "outputs/default"  # Overridden per experiment.

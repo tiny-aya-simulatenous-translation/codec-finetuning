@@ -1,0 +1,44 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# TURKISH SAMPLE DATASET -- 3.1 hours for pipeline validation (Phase 1)
+#
+# Source:  MagicHub ASR-STurkDuSC (manual download required)
+# URL:     https://magichub.com/datasets/turkish-conversational-speech-corpus/
+# Stats:   2887 utterances, 10 speakers, 16kHz mono
+# Purpose: Validate the full training + evaluation pipeline before scaling to
+#          the full ~100h Turkish dataset.
+# ══════════════════════════════════════════════════════════════════════════════
+
+dataset:
+  name: "turkish_sample"
+  language: "tr"               # ISO 639-1 code. Used by Whisper for WER.
+  source: "local"              # Options: "local", "huggingface".
+  local_raw_dir: "data/turkish_sample_raw"  # Where the raw download is placed.
+
+  # Column mappings (null = inferred from file/directory structure).
+  audio_column: null
+  text_column: null
+  speaker_column: null         # Speaker ID inferred from directory structure.
+  duration_column: null
+
+  num_examples: 2887           # Total utterances in the dataset.
+  estimated_hours: 3.1
+
+  target_sr: 24000             # All codecs expect 24kHz.
+  original_sr: 16000           # Known sample rate. Will resample 16kHz -> 24kHz.
+  mono: true                   # Force mono channel.
+
+  splits:
+    method: "speaker_disjoint" # Options: "speaker_disjoint", "random", "predefined".
+                               # Speaker-disjoint ensures no speaker leaks across
+                               # train/val/test, which is critical for fair eval.
+    train_ratio: 0.8           # 80% train.
+    val_ratio: 0.1             # 10% validation.
+    test_ratio: 0.1            # 10% test.
+    min_speaker_utterances: 3  # Drop speakers with fewer utterances than this.
+
+  filters:
+    min_duration_s: 0.5        # Skip utterances shorter than 0.5 seconds.
+    max_duration_s: 30.0       # Truncate utterances longer than 30 seconds.
+    max_clip_ratio: 0.05       # Skip if >5% of audio frames are clipped.
+
+  local_dir: "data/turkish_sample"  # Where processed audio + manifests are saved.

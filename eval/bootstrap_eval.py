@@ -1,0 +1,504 @@
+"""Bootstrap resampling evaluation for error bars without multi-seed training.
+
+Computes per-utterance quality metrics (PESQ, STOI, DNSMOS, MCD) on
+reconstructed audio, then runs bootstrap resampling to produce means,
+standard deviations, and 95% confidence intervals.
+
+Usage::
+
+    uv run python eval/bootstrap_eval.py \
+        --experiment mimi_turkish_sample \
+        [--n-resamples 20] \
+        [--confidence 0.95] \
+        [--output-json results/mimi_turkish_sample_metrics.json]
+
+License: MIT
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+import soundfile as sf
+
+from train.config_loader import load_config
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Per-utterance metric computation
+# ---------------------------------------------------------------------------
+
+
+def _compute_pesq(
+    ref: np.ndarray,
+    deg: np.ndarray,
+    sample_rate: int,
+) -> Dict[str, float]:
+    """Compute PESQ scores (narrowband and wideband).
+
+    Args:
+        ref: Reference (original) audio as a 1-D numpy array.
+        deg: Degraded (reconstructed) audio as a 1-D numpy array.
+        sample_rate: Audio sample rate in Hz.
+
+    Returns:
+        Dict with keys ``"pesq_nb"`` and ``"pesq_wb"``.
+    """
+    from pesq import pesq
+
+    results: Dict[str, float] = {}
+
+    # Wideband PESQ requires 16 kHz.
+    if sample_rate >= 16000:
+        import torchaudio.functional as F_audio
+        import torch
+
+        if sample_rate != 16000:
+            ref_16k = F_audio.resample(
+                torch.from_numpy(ref).float(), sample_rate, 16000
+            ).numpy()
+            deg_16k = F_audio.resample(
+                torch.from_numpy(deg).float(), sample_rate, 16000
+            ).numpy()
+        else:
+            ref_16k, deg_16k = ref, deg
+        results["pesq_wb"] = float(pesq(16000, ref_16k, deg_16k, "wb"))
+
+    # Narrowband PESQ requires 8 kHz.
+    if sample_rate >= 8000:
+        import torchaudio.functional as F_audio
+        import torch
+
+        if sample_rate != 8000:
+            ref_8k = F_audio.resample(
+                torch.from_numpy(ref).float(), sample_rate, 8000
+            ).numpy()
+            deg_8k = F_audio.resample(
+                torch.from_numpy(deg).float(), sample_rate, 8000
+            ).numpy()
+        else:
+            ref_8k, deg_8k = ref, deg
+        results["pesq_nb"] = float(pesq(8000, ref_8k, deg_8k, "nb"))
+
+    return results
+
+
+def _compute_stoi(
+    ref: np.ndarray,
+    deg: np.ndarray,
+    sample_rate: int,
+) -> float:
+    """Compute Short-Time Objective Intelligibility (STOI).
+
+    Args:
+        ref: Reference audio as a 1-D numpy array.
+        deg: Degraded audio as a 1-D numpy array.
+        sample_rate: Audio sample rate in Hz.
+
+    Returns:
+        STOI score as a float.
+    """
+    from pystoi import stoi
+
+    return float(stoi(ref, deg, sample_rate, extended=False))
+
+
+def _compute_dnsmos(
+    deg: np.ndarray,
+    sample_rate: int,
+) -> Dict[str, float]:
+    """Compute DNSMOS scores using the speechmos library.
+
+    Args:
+        deg: Degraded (reconstructed) audio as a 1-D numpy array.
+        sample_rate: Audio sample rate in Hz.
+
+    Returns:
+        Dict with keys ``"dnsmos_sig"``, ``"dnsmos_bak"``, ``"dnsmos_ovrl"``.
+    """
+    from speechmos import dnsmos
+
+    scores = dnsmos.run(deg, sr=sample_rate)
+    return {
+        "dnsmos_sig": float(scores["sig_mos"]),
+        "dnsmos_bak": float(scores["bak_mos"]),
+        "dnsmos_ovrl": float(scores["ovrl_mos"]),
+    }
+
+
+def _compute_mcd(
+    ref: np.ndarray,
+    deg: np.ndarray,
+    sample_rate: int,
+    n_mels: int = 80,
+    n_mfcc: int = 13,
+) -> float:
+    """Compute Mel Cepstral Distortion (MCD).
+
+    MCD measures the difference between mel-frequency cepstral
+    coefficients of the reference and degraded signals.
+
+    Args:
+        ref: Reference audio as a 1-D numpy array.
+        deg: Degraded audio as a 1-D numpy array.
+        sample_rate: Audio sample rate in Hz.
+        n_mels: Number of mel filter banks.
+        n_mfcc: Number of MFCCs to compute.
+
+    Returns:
+        MCD in dB as a float.
+    """
+    import librosa
+
+    mfcc_ref = librosa.feature.mfcc(
+        y=ref.astype(np.float32), sr=sample_rate,
+        n_mfcc=n_mfcc, n_mels=n_mels,
+    )
+    mfcc_deg = librosa.feature.mfcc(
+        y=deg.astype(np.float32), sr=sample_rate,
+        n_mfcc=n_mfcc, n_mels=n_mels,
+    )
+
+    # Align time dimension.
+    min_frames = min(mfcc_ref.shape[1], mfcc_deg.shape[1])
+    mfcc_ref = mfcc_ref[:, :min_frames]
+    mfcc_deg = mfcc_deg[:, :min_frames]
+
+    # MCD = (10 / ln10) * sqrt(2) * mean(||diff||)
+    # Using the standard dB-scale formulation.
+    diff = mfcc_ref - mfcc_deg
+    frame_mcd = np.sqrt(2.0) * np.linalg.norm(diff, axis=0)
+    mcd = float(np.mean(frame_mcd)) * (10.0 / np.log(10.0))
+
+    return mcd
+
+
+def compute_utterance_metrics(
+    ref_path: str,
+    deg_path: str,
+    sample_rate: int,
+) -> Dict[str, float]:
+    """Compute all per-utterance quality metrics.
+
+    Args:
+        ref_path: Path to the original audio file.
+        deg_path: Path to the reconstructed audio file.
+        sample_rate: Expected sample rate in Hz.
+
+    Returns:
+        Dict mapping metric names to their float values.
+    """
+    ref, sr_ref = sf.read(ref_path)
+    deg, sr_deg = sf.read(deg_path)
+
+    # Ensure mono.
+    if ref.ndim > 1:
+        ref = ref.mean(axis=1)
+    if deg.ndim > 1:
+        deg = deg.mean(axis=1)
+
+    # Align lengths.
+    min_len = min(len(ref), len(deg))
+    ref = ref[:min_len]
+    deg = deg[:min_len]
+
+    metrics: Dict[str, float] = {}
+
+    # PESQ.
+    try:
+        pesq_scores = _compute_pesq(ref, deg, sample_rate)
+        metrics.update(pesq_scores)
+    except Exception as exc:
+        logger.warning("PESQ failed for %s: %s", ref_path, exc)
+
+    # STOI.
+    try:
+        metrics["stoi"] = _compute_stoi(ref, deg, sample_rate)
+    except Exception as exc:
+        logger.warning("STOI failed for %s: %s", ref_path, exc)
+
+    # DNSMOS.
+    try:
+        dnsmos_scores = _compute_dnsmos(deg, sample_rate)
+        metrics.update(dnsmos_scores)
+    except Exception as exc:
+        logger.warning("DNSMOS failed for %s: %s", ref_path, exc)
+
+    # MCD.
+    try:
+        metrics["mcd"] = _compute_mcd(ref, deg, sample_rate)
+    except Exception as exc:
+        logger.warning("MCD failed for %s: %s", ref_path, exc)
+
+    return metrics
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap resampling
+# ---------------------------------------------------------------------------
+
+
+def bootstrap_evaluate(
+    per_utterance_metrics: List[Dict[str, float]],
+    n_resamples: int = 20,
+    confidence: float = 0.95,
+    seed: int = 42,
+) -> Dict[str, Dict[str, float]]:
+    """Run bootstrap resampling to compute means, stds, and CIs.
+
+    Args:
+        per_utterance_metrics: List of per-utterance metric dicts.
+        n_resamples: Number of bootstrap resamples.
+        confidence: Confidence level for the interval (e.g. 0.95).
+        seed: Random seed for reproducibility.
+
+    Returns:
+        Dict mapping each metric name to a dict with keys ``"mean"``,
+        ``"std"``, ``"ci_low"``, ``"ci_high"``.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(per_utterance_metrics)
+
+    # Collect all metric names that appear in the data.
+    all_keys: set[str] = set()
+    for m in per_utterance_metrics:
+        all_keys.update(m.keys())
+
+    # Build arrays for each metric (skip missing values).
+    metric_arrays: Dict[str, np.ndarray] = {}
+    for key in sorted(all_keys):
+        values = [m[key] for m in per_utterance_metrics if key in m]
+        metric_arrays[key] = np.array(values, dtype=np.float64)
+
+    alpha = 1.0 - confidence
+    results: Dict[str, Dict[str, float]] = {}
+
+    for key, values in metric_arrays.items():
+        if len(values) == 0:
+            continue
+
+        bootstrap_means = np.empty(n_resamples, dtype=np.float64)
+        for i in range(n_resamples):
+            indices = rng.choice(len(values), size=len(values), replace=True)
+            bootstrap_means[i] = np.mean(values[indices])
+
+        mean_val = float(np.mean(bootstrap_means))
+        std_val = float(np.std(bootstrap_means, ddof=1))
+        ci_low = float(np.percentile(bootstrap_means, 100 * alpha / 2))
+        ci_high = float(np.percentile(bootstrap_means, 100 * (1 - alpha / 2)))
+
+        results[key] = {
+            "mean": round(mean_val, 4),
+            "std": round(std_val, 4),
+            "ci_low": round(ci_low, 4),
+            "ci_high": round(ci_high, 4),
+        }
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Pretty-print results
+# ---------------------------------------------------------------------------
+
+_DISPLAY_NAMES: Dict[str, str] = {
+    "pesq_wb": "PESQ (wb)",
+    "pesq_nb": "PESQ (nb)",
+    "stoi": "STOI",
+    "dnsmos_sig": "DNSMOS-SIG",
+    "dnsmos_bak": "DNSMOS-BAK",
+    "dnsmos_ovrl": "DNSMOS-OVRL",
+    "mcd": "MCD",
+}
+
+
+def _print_results_table(
+    experiment: str,
+    results: Dict[str, Dict[str, float]],
+    n_resamples: int,
+) -> None:
+    """Print a formatted results table to stdout.
+
+    Args:
+        experiment: Experiment name for the header.
+        results: Bootstrap results dict.
+        n_resamples: Number of bootstrap resamples used.
+    """
+    header = f"Bootstrap Evaluation: {experiment} ({n_resamples} resamples)"
+    sep_double = "═" * 60
+    sep_single = "─" * 60
+
+    print(f"\n{sep_double}")
+    print(header)
+    print(sep_double)
+    print(f"{'Metric':<20}{'Mean':>10}{'Std':>10}{'95% CI':>20}")
+    print(sep_single)
+
+    display_order = [
+        "pesq_wb", "pesq_nb", "stoi",
+        "dnsmos_sig", "dnsmos_bak", "dnsmos_ovrl", "mcd",
+    ]
+    for key in display_order:
+        if key not in results:
+            continue
+        r = results[key]
+        name = _DISPLAY_NAMES.get(key, key)
+        ci_str = f"[{r['ci_low']:.2f}, {r['ci_high']:.2f}]"
+        print(f"{name:<20}{r['mean']:>10.2f}{r['std']:>10.2f}{ci_str:>20}")
+
+    print(sep_double)
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
+
+def run(
+    experiment: str,
+    n_resamples: int = 20,
+    confidence: float = 0.95,
+    output_json: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run the full bootstrap evaluation pipeline.
+
+    Args:
+        experiment: Experiment name (maps to a config under
+            ``configs/experiments/``).
+        n_resamples: Number of bootstrap resamples.
+        confidence: Confidence interval level.
+        output_json: Optional path to write the results JSON.
+
+    Returns:
+        The full results dict.
+
+    Raises:
+        FileNotFoundError: If the reconstruction manifest is missing.
+    """
+    config_path = Path("configs/experiments") / f"{experiment}.yaml"
+    config = load_config(str(config_path))
+    sample_rate = int(config["codec"]["sample_rate"])
+
+    # Load reconstruction manifest.
+    recon_manifest_path = (
+        Path(config["output_dir"]) / "reconstructed" / "test" / "manifest.json"
+    )
+    if not recon_manifest_path.exists():
+        raise FileNotFoundError(
+            f"Reconstruction manifest not found: {recon_manifest_path}. "
+            "Run eval/reconstruct.py first."
+        )
+
+    with open(recon_manifest_path, "r", encoding="utf-8") as fh:
+        recon_manifest: List[Dict[str, Any]] = json.load(fh)
+
+    logger.info(
+        "Computing per-utterance metrics for %d utterances...",
+        len(recon_manifest),
+    )
+
+    # Compute per-utterance metrics.
+    per_utterance: List[Dict[str, float]] = []
+    for entry in recon_manifest:
+        metrics = compute_utterance_metrics(
+            entry["original_path"],
+            entry["reconstructed_path"],
+            sample_rate,
+        )
+        per_utterance.append(metrics)
+
+    # Bootstrap.
+    seed = int(config.get("training", {}).get("seed", 42))
+    results = bootstrap_evaluate(
+        per_utterance,
+        n_resamples=n_resamples,
+        confidence=confidence,
+        seed=seed,
+    )
+
+    _print_results_table(experiment, results, n_resamples)
+
+    # Build output payload.
+    output: Dict[str, Any] = {
+        "metrics": results,
+        "config": {
+            "experiment": experiment,
+            "codec": config["codec"]["name"],
+            "sample_rate": sample_rate,
+        },
+        "n_resamples": n_resamples,
+        "confidence": confidence,
+        "n_utterances": len(recon_manifest),
+    }
+
+    # Save JSON.
+    if output_json is None:
+        output_json = f"results/{experiment}_metrics.json"
+    out_path = Path(output_json)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(output, fh, indent=2)
+    logger.info("Results saved to %s", out_path)
+
+    return output
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    """Parse CLI arguments and run bootstrap evaluation."""
+    parser = argparse.ArgumentParser(
+        description="Bootstrap resampling evaluation for codec metrics.",
+    )
+    parser.add_argument(
+        "--experiment",
+        type=str,
+        required=True,
+        help="Experiment name (e.g. mimi_turkish_sample).",
+    )
+    parser.add_argument(
+        "--n-resamples",
+        type=int,
+        default=20,
+        help="Number of bootstrap resamples (default: 20).",
+    )
+    parser.add_argument(
+        "--confidence",
+        type=float,
+        default=0.95,
+        help="Confidence level for intervals (default: 0.95).",
+    )
+    parser.add_argument(
+        "--output-json",
+        type=str,
+        default=None,
+        help="Output JSON path. Default: results/<experiment>_metrics.json.",
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    run(
+        experiment=args.experiment,
+        n_resamples=args.n_resamples,
+        confidence=args.confidence,
+        output_json=args.output_json,
+    )
+
+
+if __name__ == "__main__":
+    main()

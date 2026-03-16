@@ -1,0 +1,42 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# HINDI DATASET -- ~90 hours from private HuggingFace repo (Phase 2)
+#
+# Source:   HuggingFace (private repo, requires team token)
+# Repo:     tiny-aya-translate/hinglish-casual
+# Stats:    33275 utterances, ~29GB, has audio + speaker + text columns
+# Requires: Run `huggingface-cli login` with your team's token before
+#           running prepare_data.py with this config.
+# ══════════════════════════════════════════════════════════════════════════════
+
+dataset:
+  name: "hindi"
+  language: "hi"               # ISO 639-1 code. Used by Whisper for WER.
+  source: "huggingface"
+  hf_repo: "tiny-aya-translate/hinglish-casual"
+  hf_split: "train"           # Only split available in this dataset.
+
+  audio_column: "audio"        # HF datasets column containing audio data.
+  text_column: "utterance"     # Column with transcription text.
+  speaker_column: "speaker"    # Column with speaker ID string.
+  duration_column: "duration"  # Column with duration in seconds (float32).
+
+  num_examples: 33275
+  estimated_hours: 90
+
+  target_sr: 24000
+  original_sr: null            # Auto-detected from HF audio metadata.
+  mono: true
+
+  splits:
+    method: "speaker_disjoint"
+    train_ratio: 0.9
+    val_ratio: 0.05
+    test_ratio: 0.05
+    min_speaker_utterances: 5
+
+  filters:
+    min_duration_s: 0.5
+    max_duration_s: 30.0
+    max_clip_ratio: 0.05
+
+  local_dir: "data/hindi"

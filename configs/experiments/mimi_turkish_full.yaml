@@ -1,0 +1,39 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: Fine-tune Mimi on ~100h Turkish (full dataset)
+#
+# Purpose: Phase 2 -- full-scale training on complete Turkish corpus.
+#          This config is a placeholder until the full dataset is available.
+# Codec:   Mimi (kyutai/mimi, 96M params, 12.5Hz, 8 codebooks)
+# Dataset: Turkish full (~100h, placeholder -- update when data is ready)
+#
+# Usage:
+#   uv run python train/train_mimi.py --config configs/experiments/mimi_turkish_full.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+
+_bases_:
+  - "../base.yaml"
+  - "../codecs/mimi.yaml"
+  - "../datasets/turkish_full.yaml"
+
+# ── Overrides for this experiment ────────────────────────────────────────────
+
+training:
+  max_steps: 100000            # Long training for ~100h dataset.
+  eval_every: 2000
+  save_every: 5000
+
+optimizer:
+  lr: !!float 3e-4
+
+augmentation:
+  preset: "light"              # Light augmentation -- large dataset provides
+                               # sufficient diversity on its own.
+
+early_stopping:
+  patience: 5
+
+wandb:
+  tags: ["mimi", "turkish", "full", "phase2"]
+  run_name: "mimi-tr-full"
+
+output_dir: "outputs/mimi_turkish_full"

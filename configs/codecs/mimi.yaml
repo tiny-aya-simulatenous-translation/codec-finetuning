@@ -1,0 +1,44 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# MIMI CODEC CONFIG
+#
+# Architecture: SEANet encoder/decoder + Transformer bottleneck +
+#               Split-RVQ (1 semantic + 7 acoustic codebooks)
+# Pretrained:   kyutai/mimi (96M params, 24kHz, 12.5Hz frame rate)
+# Training:     Adversarial + WavLM semantic distillation + feature matching
+# Paper:        Défossez et al., "Moshi: a speech-text foundation model for
+#               real-time dialogue", Kyutai 2024
+# ══════════════════════════════════════════════════════════════════════════════
+
+codec:
+  name: "mimi"
+  pretrained: "kyutai/mimi"    # HuggingFace model ID for pretrained weights.
+  sample_rate: 24000           # All audio must be resampled to 24kHz.
+  frame_rate: 12.5             # Tokens per second of audio.
+  num_codebooks: 8             # 1 semantic + 7 acoustic.
+  latency_ms: 80               # Streaming frame size. Used for sample alignment
+                               # before computing reference-dependent metrics.
+  params_millions: 96
+
+  training:
+    micro_batch_size: 48       # Per-GPU micro batch size for H100 80GB.
+                               # Range: [8, 64]. See memory analysis in spec.
+    segment_s: 10.0            # Audio segment length in seconds.
+                               # Range: [2.0, 20.0]. Longer = more context per
+                               # example but fewer examples per effective epoch.
+    freeze_encoder_steps: 0    # Freeze encoder for N steps. 0 = train all from
+                               # the start. Set > 0 to warm up decoder first.
+    unfreeze_layers: "all"     # Options: "all", "decoder_only", "quantizer_only".
+
+  losses:
+    reconstruction: "l1"       # Options: "l1", "l2", "mel_l1".
+    reconstruction_weight: 1.0
+    adversarial: true          # Enable adversarial (GAN) loss.
+    adversarial_weight: 0.1
+    feature_matching: true     # Multi-scale feature matching from discriminator.
+    feature_matching_weight: 2.0
+    wavlm_distillation: true   # Mimi-specific: distill semantic tokens from WavLM.
+    wavlm_distillation_weight: 1.0
+    commit_loss_weight: 0.25   # VQ commitment loss to prevent codebook collapse.
+
+  flash_attention: true        # Use FlashAttention in transformer layers.
+                               # Falls back to PyTorch SDPA if unavailable.

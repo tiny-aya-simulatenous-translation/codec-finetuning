@@ -1,0 +1,40 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: Fine-tune DualCodec on ~100h Turkish (full dataset)
+#
+# Purpose: Phase 2 -- full-scale training on complete Turkish corpus.
+#          This config is a placeholder until the full dataset is available.
+# Codec:   DualCodec (amphion/dualcodec 12hz_v1, ~200M params, 12.5Hz,
+#          8 codebooks: 1 semantic + 7 acoustic)
+# Dataset: Turkish full (~100h, placeholder -- update when data is ready)
+#
+# Usage:
+#   uv run python train/train_dualcodec.py --config configs/experiments/dualcodec_turkish_full.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+
+_bases_:
+  - "../base.yaml"
+  - "../codecs/dualcodec.yaml"
+  - "../datasets/turkish_full.yaml"
+
+# ── Overrides for this experiment ────────────────────────────────────────────
+
+training:
+  max_steps: 80000             # DualCodec trains slightly fewer steps than Mimi.
+  eval_every: 2000
+  save_every: 5000
+
+optimizer:
+  lr: !!float 2e-4
+
+augmentation:
+  preset: "light"              # Light augmentation -- large dataset provides
+                               # sufficient diversity on its own.
+
+early_stopping:
+  patience: 5
+
+wandb:
+  tags: ["dualcodec", "turkish", "full", "phase2"]
+  run_name: "dualcodec-tr-full"
+
+output_dir: "outputs/dualcodec_turkish_full"

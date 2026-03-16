@@ -1,0 +1,38 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: Fine-tune Kanade on 3.1h Turkish sample
+#
+# Purpose: Phase 1 pipeline validation -- verify everything works end-to-end.
+# Codec:   Kanade (frothywater/kanade-25hz-clean, 142M params, 25Hz,
+#          1 codebook with 12800 vocab)
+# Dataset: Turkish sample (3.1h, MagicHub ASR-STurkDuSC)
+#
+# Usage:
+#   uv run python train/train_kanade.py --config configs/experiments/kanade_turkish_sample.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+
+_bases_:
+  - "../base.yaml"
+  - "../codecs/kanade.yaml"
+  - "../datasets/turkish_sample.yaml"
+
+# ── Overrides for this experiment ────────────────────────────────────────────
+
+training:
+  max_steps: 5000              # Short run for pipeline validation.
+  eval_every: 250              # Frequent eval on small data.
+  save_every: 500
+
+optimizer:
+  lr: !!float 1e-4
+
+augmentation:
+  preset: "heavy"              # Aggressive augmentation for 3.1h dataset.
+
+early_stopping:
+  patience: 10                 # More patience on tiny dataset.
+
+wandb:
+  tags: ["kanade", "turkish", "sample", "phase1"]
+  run_name: "kanade-tr-sample"
+
+output_dir: "outputs/kanade_turkish_sample"

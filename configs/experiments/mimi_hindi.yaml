@@ -1,0 +1,41 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: Fine-tune Mimi on ~90h Hindi
+#
+# Purpose: Phase 2 -- full-scale training on Hindi conversational speech.
+# Codec:   Mimi (kyutai/mimi, 96M params, 12.5Hz, 8 codebooks)
+# Dataset: Hindi (~90h, tiny-aya-translate/hinglish-casual, private HF repo)
+#
+# Prerequisites:
+#   Run `huggingface-cli login` with your team's token before training.
+#
+# Usage:
+#   uv run python train/train_mimi.py --config configs/experiments/mimi_hindi.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+
+_bases_:
+  - "../base.yaml"
+  - "../codecs/mimi.yaml"
+  - "../datasets/hindi.yaml"
+
+# ── Overrides for this experiment ────────────────────────────────────────────
+
+training:
+  max_steps: 100000            # Long training for ~90h dataset.
+  eval_every: 2000
+  save_every: 5000
+
+optimizer:
+  lr: !!float 3e-4
+
+augmentation:
+  preset: "light"              # Light augmentation -- large dataset provides
+                               # sufficient diversity on its own.
+
+early_stopping:
+  patience: 5
+
+wandb:
+  tags: ["mimi", "hindi", "phase2"]
+  run_name: "mimi-hindi"
+
+output_dir: "outputs/mimi_hindi"
