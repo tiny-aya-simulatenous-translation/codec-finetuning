@@ -261,12 +261,11 @@ def _split_params_for_muon(
 ) -> Tuple[List[nn.Parameter], List[nn.Parameter]]:
     """Separate model parameters into Muon-eligible and AdamW-eligible groups.
 
-    Muon targets **2-D (or higher) hidden-layer weight matrices** where its
+    Muon targets **strictly 2-D hidden-layer weight matrices** where its
     orthogonalised update provides the most benefit.  Everything else
-    (embeddings, LayerNorm, biases, 1-D parameters) is routed to AdamW.
-
-    For 4-D conv weights, Muon internally flattens them before applying the
-    Newton-Schulz iteration so they are included in the Muon group.
+    (embeddings, LayerNorm, biases, 1-D parameters, and 3-D+ conv weights)
+    is routed to AdamW.  The native ``torch.optim.Muon`` only supports 2-D
+    tensors; 1-D conv weights (3-D) are not flattened automatically.
 
     Args:
         model: The neural network model.
@@ -292,16 +291,15 @@ def _split_params_for_muon(
 
         name_lower = name.lower()
 
-        # Exclude: embeddings, norms, biases, and any 1-D params.
+        # Exclude: embeddings, norms, biases, non-2D params.
         is_embedding = "embed" in name_lower
         is_norm = "norm" in name_lower or "ln" in name_lower
         is_bias = name_lower.endswith(".bias")
-        is_1d = param.ndim < 2
+        is_not_2d = param.ndim != 2
 
-        if is_embedding or is_norm or is_bias or is_1d:
+        if is_embedding or is_norm or is_bias or is_not_2d:
             adamw_params.append(param)
         else:
-            # 2-D+ weight tensors (linear weights, conv weights, etc.)
             muon_params.append(param)
 
     logger.info(
@@ -418,11 +416,11 @@ class MuonHybridOptimizer(Optimizer):
         if adamw_opt is not None:
             param_groups.extend(adamw_opt.param_groups)
 
-        # Initialise base Optimizer with a dummy default dict; real defaults
-        # live inside the inner optimizers.
+        # Initialise base Optimizer preserving lr from inner optimizers
+        # so that LR schedulers (LambdaLR, etc.) can read initial_lr.
         super().__init__(
-            [{"params": pg["params"]} for pg in param_groups],
-            defaults={},
+            [{"params": pg["params"], "lr": pg.get("lr", 1e-4)} for pg in param_groups],
+            defaults={"lr": 1e-4},
         )
 
     # -- Core interface ----------------------------------------------------

@@ -1,9 +1,9 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# EXPERIMENT: Fine-tune Mimi on 3.1h Turkish sample
+# EXPERIMENT: Fine-tune Mimi on 10h Turkish sample
 #
 # Purpose: Phase 1 pipeline validation -- verify everything works end-to-end.
 # Codec:   Mimi (kyutai/mimi, 96M params, 12.5Hz, 8 codebooks)
-# Dataset: Turkish sample (3.1h, MagicHub ASR-STurkDuSC)
+# Dataset: Turkish sample (10h, MediaSpeech OpenSLR 108, CC BY 4.0)
 #
 # Usage:
 #   uv run python train/train_mimi.py --config configs/experiments/mimi_turkish_sample.yaml
@@ -25,7 +25,7 @@ optimizer:
   lr: !!float 1e-4
 
 augmentation:
-  preset: "heavy"              # Aggressive augmentation for 3.1h dataset.
+  preset: "heavy"              # Aggressive augmentation for 10h dataset.
 
 ema:
   decay: 0.9999               # Slower EMA for small data.

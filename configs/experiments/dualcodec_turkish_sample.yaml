@@ -1,10 +1,10 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# EXPERIMENT: Fine-tune DualCodec on 3.1h Turkish sample
+# EXPERIMENT: Fine-tune DualCodec on 10h Turkish sample
 #
 # Purpose: Phase 1 pipeline validation -- verify everything works end-to-end.
 # Codec:   DualCodec (amphion/dualcodec 12hz_v1, ~200M params, 12.5Hz,
 #          8 codebooks: 1 semantic + 7 acoustic)
-# Dataset: Turkish sample (3.1h, MagicHub ASR-STurkDuSC)
+# Dataset: Turkish sample (10h, MediaSpeech OpenSLR 108, CC BY 4.0)
 #
 # Usage:
 #   uv run python train/train_dualcodec.py --config configs/experiments/dualcodec_turkish_sample.yaml
@@ -26,7 +26,7 @@ optimizer:
   lr: !!float 1e-4
 
 augmentation:
-  preset: "heavy"              # Aggressive augmentation for 3.1h dataset.
+  preset: "heavy"              # Aggressive augmentation for 10h dataset.
 
 early_stopping:
   patience: 10                 # More patience on tiny dataset.

@@ -45,8 +45,11 @@ training:
   seed: 42                     # Random seed for reproducibility.
   precision: "bf16"            # Options: "bf16", "fp32". Always bf16 on H100.
   compile: true                # torch.compile the model.
-  compile_mode: "reduce-overhead"  # Options: "default", "reduce-overhead",
+  compile_mode: "default"      # Options: "default", "reduce-overhead",
                                #          "max-autotune".
+                               # NOTE: "reduce-overhead" enables CUDA graphs
+                               # which conflict with Mimi's VQ codebook
+                               # lazy embed property. Use "default".
 
 # ── EMA (Exponential Moving Average) ────────────────────────────────────────
 ema:
