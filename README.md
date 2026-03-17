@@ -28,19 +28,66 @@ WandB Bayesian hyperparameter sweeps, and bootstrap evaluation for error bars.
 
 ## Quick Start
 
-Five commands to validate the full pipeline on the 3.1-hour Turkish sample:
+### Setup + data
 
 ```bash
 git clone https://github.com/<user>/codec-finetuning.git && cd codec-finetuning
-bash scripts/setup.sh
-bash scripts/download_data.sh turkish_sample
-uv run python train/train_mimi.py --config configs/experiments/mimi_turkish_sample.yaml
-uv run python eval/bootstrap_eval.py --experiment mimi_turkish_sample
+bash scripts/setup.sh                        # installs uv, Python 3.12 venv, all deps
+wandb login                                  # paste your WandB API key
+bash scripts/download_data.sh turkish_sample # downloads MediaSpeech Turkish (~618 MB)
 ```
 
-`download_data.sh` will print manual download instructions for the Turkish
-corpus (free MagicHub registration required). After placing the ZIP contents in
-`data/turkish_sample_raw/`, re-run the script to prepare the data.
+`download_data.sh` automatically downloads and prepares the MediaSpeech Turkish
+dataset from OpenSLR (CC BY 4.0). No registration required.
+
+### Train a single run (pipeline validation)
+
+```bash
+# Mimi
+uv run python train/train_mimi.py --config configs/experiments/mimi_turkish_sample.yaml
+
+# DualCodec
+bash train/train_dualcodec.sh --config configs/experiments/dualcodec_turkish_sample.yaml
+
+# Kanade
+bash train/train_kanade.sh --config configs/experiments/kanade_turkish_sample.yaml
+```
+
+### Run hyperparameter sweeps (full benchmark)
+
+Each codec has its own Bayesian sweep config (40--60 runs, Hyperband early
+termination). Set `WANDB_AGENTS` to run multiple trials in parallel on the
+same GPU:
+
+```bash
+# Mimi -- 96M params, fits 2 agents on a single H100 80 GB
+WANDB_AGENTS=2 bash scripts/run_sweep.sh mimi
+
+# DualCodec -- 200M params (includes w2v-bert-2.0), 1 agent per H100
+bash scripts/run_sweep.sh dualcodec
+
+# Kanade -- 142M params, fits 2 agents on a single H100 80 GB
+WANDB_AGENTS=2 bash scripts/run_sweep.sh kanade
+```
+
+On a multi-GPU node you can run more agents. As a rule of thumb:
+
+| GPU | Mimi agents | DualCodec agents | Kanade agents |
+|-----|:-----------:|:----------------:|:-------------:|
+| 1x H100 80 GB | 2 | 1 | 2 |
+| 2x H100 80 GB | 3 | 2 | 3 |
+| 1x A100 40 GB | 1 | 1 | 1 |
+
+### Evaluate + analyze
+
+```bash
+# Bootstrap evaluation (PESQ, STOI, DNSMOS, MCD with 95% CIs)
+uv run python eval/bootstrap_eval.py --experiment mimi_turkish_sample
+
+# Extract best config from a completed sweep
+uv run python scripts/analyze_sweep.py --sweep-id <entity/project/sweep_id> \
+    --output configs/experiments/mimi_turkish_sample_best.yaml
+```
 
 ---
 
@@ -49,7 +96,7 @@ corpus (free MagicHub registration required). After placing the ZIP contents in
 | Requirement | Details |
 |---|---|
 | GPU | NVIDIA H100 80 GB recommended (tested). A100 40 GB minimum. |
-| CUDA drivers | 12.6+ (the CUDA toolkit itself is bundled in the PyTorch wheel). |
+| CUDA drivers | 12.6+ (CUDA 12.6 toolkit is bundled in the PyTorch wheel). |
 | Python | 3.12+ |
 | OS | Ubuntu 22.04+ (tested on Lambda Stack 24.04 and RunPod PyTorch templates). |
 | Accounts | [WandB](https://wandb.ai) (free) for logging and sweeps. [HuggingFace](https://huggingface.co) (free, token needed for the Hindi dataset). |
@@ -71,7 +118,7 @@ This installs:
 
 - **uv** (if not already present)
 - Python 3.12 virtual environment
-- PyTorch 2.9.1 + CUDA 12.8
+- PyTorch 2.9.1 + CUDA 12.6
 - FlashAttention 2.8.3
 - All train and eval dependencies from `pyproject.toml`
 - Pretrained codec checkpoints (Mimi, DualCodec, Kanade)
@@ -95,23 +142,22 @@ PyTorch SDPA automatically.
 All datasets are resampled to 24 kHz mono and split into speaker-disjoint
 train/val/test partitions by `prepare_data.py`.
 
-### Turkish Sample (3.1 h -- Phase 1 pipeline validation)
+### Turkish Sample (10 h -- Phase 1 pipeline validation)
 
-1. Visit <https://magichub.com/datasets/turkish-conversational-speech-corpus/>
-   and register for a free account.
-2. Download the dataset ZIP.
-3. Extract its contents to `data/turkish_sample_raw/`.
-4. Run preparation:
-
-```bash
-uv run python prepare_data.py --config configs/datasets/turkish_sample.yaml
-```
-
-Or use the convenience script, which prints the same instructions and runs
-preparation automatically if raw files are present:
+MediaSpeech Turkish from [OpenSLR 108](https://www.openslr.org/108/) (CC BY
+4.0). The convenience script downloads and prepares the data automatically:
 
 ```bash
 bash scripts/download_data.sh turkish_sample
+```
+
+This downloads `TR.tgz` (~618 MB) from OpenSLR, extracts FLAC audio files with
+matching TXT transcripts, resamples to 24 kHz, and creates train/val/test
+splits. Or run preparation manually if you already have the data:
+
+```bash
+# Extract TR.tgz into data/turkish_sample_raw/
+uv run python prepare_data.py --config configs/datasets/turkish_sample.yaml
 ```
 
 ### Hindi (~90 h -- Phase 2, HuggingFace private)
@@ -267,25 +313,43 @@ All optimizers are created through a single factory in
 Sweep configs live in `configs/sweeps/`. Hyperband kills underperforming runs
 early (first bracket at ~step 500) to save compute.
 
-### Launch a sweep
+### Launch sweeps
+
+Run all three codecs (adjust `WANDB_AGENTS` for your GPU capacity -- see the
+table in [Quick Start](#quick-start)):
 
 ```bash
-bash scripts/run_sweep.sh mimi
+# Mimi (96M params) -- 2 agents on 1x H100 80 GB
+WANDB_AGENTS=2 bash scripts/run_sweep.sh mimi
+
+# DualCodec (200M params) -- 1 agent on 1x H100 80 GB
+bash scripts/run_sweep.sh dualcodec
+
+# Kanade (142M params) -- 2 agents on 1x H100 80 GB
+WANDB_AGENTS=2 bash scripts/run_sweep.sh kanade
 ```
 
-To run two agents in parallel on the same machine:
+On 2x H100 or more, increase the agent count:
 
 ```bash
-WANDB_AGENTS=2 bash scripts/run_sweep.sh mimi
+WANDB_AGENTS=3 bash scripts/run_sweep.sh mimi
+WANDB_AGENTS=2 bash scripts/run_sweep.sh dualcodec
+WANDB_AGENTS=3 bash scripts/run_sweep.sh kanade
 ```
 
 ### Analyze results
 
-After the sweep finishes, extract the best configuration as a YAML file:
+After each sweep finishes, extract the best configuration as a YAML file:
 
 ```bash
 uv run python scripts/analyze_sweep.py --sweep-id <entity/project/sweep_id> \
     --output configs/experiments/mimi_turkish_sample_best.yaml
+
+uv run python scripts/analyze_sweep.py --sweep-id <entity/project/sweep_id> \
+    --output configs/experiments/dualcodec_turkish_sample_best.yaml
+
+uv run python scripts/analyze_sweep.py --sweep-id <entity/project/sweep_id> \
+    --output configs/experiments/kanade_turkish_sample_best.yaml
 ```
 
 The analysis script prints a ranked table of runs and a parameter importance
@@ -350,8 +414,8 @@ WandB logging in sequence.
 
 The benchmark is designed in two phases:
 
-- **Phase 1** uses the 3.1-hour Turkish sample for end-to-end pipeline
-  validation.
+- **Phase 1** uses the 10-hour Turkish sample (MediaSpeech) for end-to-end
+  pipeline validation.
 - **Phase 2** scales to ~100 h Turkish and ~90 h Hindi.
 
 The transition requires **only config changes** -- zero code modifications:

@@ -77,7 +77,7 @@ uv run ruff check .
    configs/sweeps/{your_codec}_sweep.yaml
    ```
 
-6. **Test on the Turkish sample first** (3.1 h, fast iteration) before scaling
+6. **Test on the Turkish sample first** (10 h, fast iteration) before scaling
    to larger datasets like Hindi.
 
 ---
@@ -118,6 +118,6 @@ Before submitting a pull request, make sure **all** of the following are true:
 - [ ] `uv run ruff check .` passes
 - [ ] All new functions have Google-style docstrings with type hints
 - [ ] New config files have inline comments on every field
-- [ ] Tested on the Turkish sample dataset (3.1 h, fast iteration)
+- [ ] Tested on the Turkish sample dataset (10 h, fast iteration)
 - [ ] Updated `README.md` if adding user-facing features
 - [ ] No secrets, API keys, or HuggingFace tokens in committed files

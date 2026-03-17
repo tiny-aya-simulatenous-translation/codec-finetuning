@@ -25,38 +25,39 @@ echo "Dataset Download: $DATASET"
 echo "═══════════════════════════════════════════════════════════"
 
 download_turkish_sample() {
-    echo "Turkish Sample (3.1h) -- MagicHub ASR-STurkDuSC"
+    echo "Turkish Sample (10h) -- MediaSpeech (OpenSLR 108, CC BY 4.0)"
     echo ""
-    echo "This dataset requires manual download from MagicHub."
-    echo "Please follow these steps:"
-    echo "  1. Visit: https://magichub.com/datasets/turkish-conversational-speech-corpus/"
-    echo "  2. Register for a free account"
-    echo "  3. Download the dataset ZIP"
-    echo "  4. Extract to: data/turkish_sample_raw/"
-    echo "  5. Then run: uv run python prepare_data.py --config configs/datasets/turkish_sample.yaml"
-    echo ""
-    
-    mkdir -p data/turkish_sample_raw
-    
-    if [ -d "data/turkish_sample_raw" ] && [ "$(ls -A data/turkish_sample_raw 2>/dev/null)" ]; then
-        echo "Raw data found. Running preparation..."
-        uv run python prepare_data.py --config configs/datasets/turkish_sample.yaml
+
+    RAW_DIR="data/turkish_sample_raw"
+    mkdir -p "$RAW_DIR"
+
+    if [ -d "$RAW_DIR/TR" ] && [ "$(ls -A "$RAW_DIR/TR" 2>/dev/null)" ]; then
+        echo "Raw data already present in $RAW_DIR/TR. Skipping download."
     else
-        echo "No raw data found in data/turkish_sample_raw/. Please download first."
+        echo "Downloading TR.tgz from OpenSLR (~618 MB)..."
+        rm -f "$RAW_DIR/TR.tgz"
+        wget -O "$RAW_DIR/TR.tgz" "https://openslr.trmal.net/resources/108/TR.tgz"
+        echo "Extracting..."
+        tar xzf "$RAW_DIR/TR.tgz" -C "$RAW_DIR"
+        rm -f "$RAW_DIR/TR.tgz"
+        echo "Download complete."
     fi
+
+    echo "Running data preparation..."
+    uv run python prepare_data.py --config configs/datasets/turkish_sample.yaml
 }
 
 download_hindi() {
     echo "Hindi (~90h) -- HuggingFace private repo"
     echo ""
-    
+
     # Check HF auth
     if ! uv run python -c "from huggingface_hub import HfApi; HfApi().whoami()" 2>/dev/null; then
         echo "ERROR: Not logged in to HuggingFace."
         echo "Run: huggingface-cli login"
         exit 1
     fi
-    
+
     echo "Authenticated. Downloading and preparing Hindi dataset..."
     uv run python prepare_data.py --config configs/datasets/hindi.yaml
 }

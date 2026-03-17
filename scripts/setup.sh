@@ -34,7 +34,7 @@ fi
 echo "[2/6] Installing dependencies (train + eval)..."
 uv sync --extra train --extra eval
 
-# 3. Install FlashAttention (prebuilt wheel for torch 2.9.1 + cu128)
+# 3. Install FlashAttention (prebuilt wheel for torch 2.9.1 + cu126)
 echo "[3/6] Installing FlashAttention 2.8.3..."
 uv pip install flash-attn==2.8.3 --no-build-isolation
 

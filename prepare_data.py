@@ -31,15 +31,45 @@ from typing import Any, Dict, List, Optional
 import librosa
 import numpy as np
 import soundfile as sf
+import yaml
 from tqdm import tqdm
 
-from train.config_loader import load_config
+from train.config_loader import _resolve_bases
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def _load_dataset_config(config_path: str) -> Dict[str, Any]:
+    """Load a dataset config with ``_bases_`` resolution but no experiment validation.
+
+    Dataset configs (e.g. ``configs/datasets/turkish_sample.yaml``) lack
+    experiment-level fields like ``optimizer`` or ``codec``.  This helper
+    resolves base references without requiring those fields.
+
+    Args:
+        config_path: Path to a dataset YAML config file.
+
+    Returns:
+        The merged config dictionary.
+    """
+    config_path_obj = Path(config_path).resolve()
+    logger.info("Loading config: %s", config_path_obj)
+
+    with open(config_path_obj, "r", encoding="utf-8") as fh:
+        raw: Dict[str, Any] = yaml.safe_load(fh) or {}
+
+    config = _resolve_bases(raw, config_path_obj.parent)
+
+    if "dataset" not in config:
+        raise ValueError(
+            f"Config {config_path} is missing a 'dataset' section. "
+            "Check that you are passing a dataset config file."
+        )
+    return config
 
 
 def prepare(config_path: str) -> None:
@@ -58,7 +88,7 @@ def prepare(config_path: str) -> None:
         config_path: Path to a dataset YAML config file, e.g.
             ``configs/datasets/turkish_sample.yaml``.
     """
-    config = load_config(config_path)
+    config = _load_dataset_config(config_path)
     ds_cfg: Dict[str, Any] = config["dataset"]
 
     output_dir = Path(ds_cfg["local_dir"])
@@ -93,10 +123,10 @@ def prepare(config_path: str) -> None:
         manifests[split_name] = _write_split(split_examples, split_name, output_dir, target_sr)
 
     # ── Validate ─────────────────────────────────────────────────────────
-    _validate_output(output_dir)
+    split_method = ds_cfg.get("splits", {}).get("method", "random")
+    _validate_output(output_dir, check_speaker_disjoint=(split_method == "speaker_disjoint"))
 
     # ── Summary ──────────────────────────────────────────────────────────
-    split_method = ds_cfg.get("splits", {}).get("method", "random")
     disjoint_str = "✓" if split_method == "speaker_disjoint" else "✗"
 
     print("\n══════════════════════════════════════════════════════════════")
@@ -242,12 +272,22 @@ def _load_from_local(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             audio_array = audio_array.mean(axis=1)
 
         speaker = fpath.parent.name
+
+        # Look for a matching transcript file (.txt) alongside the audio.
+        txt_path = fpath.with_suffix(".txt")
+        text = ""
+        if txt_path.exists():
+            try:
+                text = txt_path.read_text(encoding="utf-8").strip()
+            except Exception:
+                logger.warning("Failed to read transcript %s.", txt_path)
+
         duration = len(audio_array) / sr
 
         examples.append({
             "audio": audio_array,
             "sr": sr,
-            "text": "",
+            "text": text,
             "speaker": speaker,
             "duration": duration,
             "id": f"utt_{idx:05d}",
@@ -526,16 +566,20 @@ def _write_split(
 # ---------------------------------------------------------------------------
 
 
-def _validate_output(output_dir: Path) -> None:
+def _validate_output(output_dir: Path, check_speaker_disjoint: bool = True) -> None:
     """Validate that the prepared dataset is consistent and complete.
 
     Checks:
         - All expected splits (train, val, test) have directories and manifests.
         - Every WAV referenced in a manifest exists on disk.
-        - No speaker appears in more than one split.
+        - No speaker appears in more than one split (only when
+          *check_speaker_disjoint* is ``True``).
 
     Args:
         output_dir: Root output directory containing split sub-directories.
+        check_speaker_disjoint: Whether to verify that no speaker appears in
+            more than one split.  Set to ``False`` for datasets without
+            speaker IDs (e.g. MediaSpeech) that use random splits.
 
     Raises:
         FileNotFoundError: If a manifest or WAV file is missing.
@@ -560,12 +604,13 @@ def _validate_output(output_dir: Path) -> None:
 
         speakers_by_split[split_name] = split_speakers
 
-    # Cross-split speaker overlap check.
-    for a, b in [("train", "val"), ("train", "test"), ("val", "test")]:
-        overlap = speakers_by_split[a] & speakers_by_split[b]
-        assert not overlap, (
-            f"Speaker overlap between {a} and {b}: {overlap}"
-        )
+    # Cross-split speaker overlap check (only for speaker-disjoint splits).
+    if check_speaker_disjoint:
+        for a, b in [("train", "val"), ("train", "test"), ("val", "test")]:
+            overlap = speakers_by_split[a] & speakers_by_split[b]
+            assert not overlap, (
+                f"Speaker overlap between {a} and {b}: {overlap}"
+            )
 
     logger.info("Validation passed for %s", output_dir)
 

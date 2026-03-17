@@ -95,6 +95,7 @@ class _AudioManifestDataset(Dataset):
 
     Args:
         manifest_path: Path to the JSON manifest file.
+        base_dir: Root directory that ``audio_path`` entries are relative to.
         segment_samples: Number of samples to crop/pad each utterance to.
         sample_rate: Target sample rate for resampling.
     """
@@ -102,11 +103,13 @@ class _AudioManifestDataset(Dataset):
     def __init__(
         self,
         manifest_path: str,
+        base_dir: str,
         segment_samples: int,
         sample_rate: int,
     ) -> None:
         with open(manifest_path, "r", encoding="utf-8") as fh:
             self.entries: List[Dict[str, Any]] = json.load(fh)
+        self.base_dir = Path(base_dir)
         self.segment_samples = segment_samples
         self.sample_rate = sample_rate
 
@@ -124,21 +127,24 @@ class _AudioManifestDataset(Dataset):
             A dict with key ``"audio"`` containing a tensor of shape
             ``(1, segment_samples)``.
         """
-        import torchaudio
+        import soundfile as sf
 
         entry = self.entries[idx]
-        audio_path = entry["audio_path"]
-        waveform, sr = torchaudio.load(audio_path)
+        audio_path = self.base_dir / entry["audio_path"]
+        audio_np, sr = sf.read(str(audio_path), dtype="float32")
+
+        # Force mono.
+        if audio_np.ndim > 1:
+            audio_np = audio_np.mean(axis=1)
+        waveform = torch.from_numpy(audio_np).unsqueeze(0)  # (1, samples)
 
         # Resample if needed.
         if sr != self.sample_rate:
+            import torchaudio
+
             waveform = torchaudio.functional.resample(
                 waveform, sr, self.sample_rate
             )
-
-        # Force mono.
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
 
         # Crop or pad to fixed length.
         if waveform.shape[-1] > self.segment_samples:
@@ -158,8 +164,8 @@ def _load_dataset(
 ) -> Tuple[DataLoader, DataLoader]:
     """Load train and validation datasets from manifest JSON files.
 
-    Expects ``config["dataset"]["local_dir"]`` to contain
-    ``train_manifest.json`` and ``val_manifest.json``.
+    Expects ``config["dataset"]["local_dir"]`` to contain split
+    subdirectories (``train/``, ``val/``) each with a ``manifest.json``.
 
     Args:
         config: Full experiment config dict.
@@ -176,8 +182,8 @@ def _load_dataset(
     segment_samples = int(sr * segment_s)
     batch_size: int = config["codec"]["training"]["micro_batch_size"]
 
-    train_manifest = local_dir / "train_manifest.json"
-    val_manifest = local_dir / "val_manifest.json"
+    train_manifest = local_dir / "train" / "manifest.json"
+    val_manifest = local_dir / "val" / "manifest.json"
 
     if not train_manifest.exists():
         raise FileNotFoundError(
@@ -189,10 +195,10 @@ def _load_dataset(
         )
 
     train_ds = _AudioManifestDataset(
-        str(train_manifest), segment_samples, sr
+        str(train_manifest), str(local_dir), segment_samples, sr
     )
     val_ds = _AudioManifestDataset(
-        str(val_manifest), segment_samples, sr
+        str(val_manifest), str(local_dir), segment_samples, sr
     )
 
     train_loader = DataLoader(
@@ -519,7 +525,7 @@ def train(config: Dict[str, Any]) -> None:
 
     if config["training"].get("compile", False):
         compile_mode = config["training"].get(
-            "compile_mode", "reduce-overhead"
+            "compile_mode", "default"
         )
         logger.info("Compiling model with mode=%s", compile_mode)
         model = torch.compile(model, mode=compile_mode)
@@ -695,7 +701,7 @@ def train(config: Dict[str, Any]) -> None:
                     F.l1_loss(reconstructed, audio) * recon_weight
                 )
 
-                if commit_weight > 0:
+                if commit_weight > 0 and hasattr(output, "quantizer_loss") and output.quantizer_loss is not None:
                     losses["commitment"] = (
                         output.quantizer_loss * commit_weight
                     )
