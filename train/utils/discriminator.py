@@ -10,6 +10,29 @@ Also provides the four loss helpers commonly used with this architecture:
 hinge-based discriminator / generator losses, L1 feature-matching loss,
 and R1 gradient penalty.
 
+Architecture
+------------
+:class:`STFTDiscriminator` (single scale):
+
+- Input: mono waveform ``(B, 1, T)``
+- ``torch.stft`` → complex spectrogram ``(B, F, T')``
+- Stack real + imag → ``(B, 2, F, T')``
+- 4× ``Conv2d`` + ``LeakyReLU(0.2)`` layers (channels 2→32→64→128→256)
+- 1× ``Conv2d`` projection (256→1) → per-patch logits ``(B, 1, F', T')``
+
+:class:`MultiScaleSTFTDiscriminator` wraps three such discriminators at
+FFT sizes 2048 / 1024 / 512 to cover coarse-to-fine spectral detail.
+
+Loss functions
+--------------
+- :func:`discriminator_loss` — hinge loss: push real logits above +1,
+  fake logits below −1.
+- :func:`generator_loss` — hinge loss: maximise fake logits (push above 0).
+- :func:`feature_matching_loss` — L1 distance between intermediate
+  discriminator activations on real vs. generated audio.
+- :func:`r1_penalty` — zero-centred gradient penalty on real data for
+  GAN training stabilisation.
+
 Usage::
 
     from train.utils.discriminator import (
@@ -305,8 +328,11 @@ def r1_penalty(
 
     all_logits, _ = discriminator(real_audio)
 
-    # Sum logits across all scales before computing gradients.
+    # Sum logits across all scales before computing gradients so that
+    # a single backward pass suffices for all sub-discriminators.
     logit_sum = sum(lg.sum() for lg in all_logits)
+    # create_graph=True is required because the R1 penalty itself must
+    # be differentiable (it participates in the discriminator backward).
     (grad,) = torch.autograd.grad(
         outputs=logit_sum,
         inputs=real_audio,
@@ -314,5 +340,7 @@ def r1_penalty(
     )
 
     # Squared L2 norm of the gradient, averaged over the batch.
+    # This zero-centred penalty discourages the discriminator from
+    # producing large gradients on real data, stabilising training.
     penalty = grad.square().sum(dim=[1, 2]).mean() if grad.dim() == 3 else grad.square().mean()
     return penalty

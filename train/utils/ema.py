@@ -5,6 +5,31 @@ exponential moving average of the training weights.  During evaluation
 the EMA weights can be temporarily swapped in for improved generation
 quality, then restored after.
 
+EMA formula
+-----------
+At each update step *t* (once ``step >= start_step``):
+
+.. math::
+
+    \\theta_{\\text{ema}}^{(t)} = d \\cdot \\theta_{\\text{ema}}^{(t-1)}
+                                + (1 - d) \\cdot \\theta^{(t)}
+
+where *d* is the ``decay`` factor (typically 0.999) and *θ* are the
+model parameters.  Higher decay produces smoother, slower-adapting
+averages.
+
+Evaluation workflow
+-------------------
+1. ``ema.apply_to(model)`` — copies shadow weights into the model and
+   backs up the original (training) weights.
+2. Run validation / inference with the model.
+3. ``ema.restore(model)`` — swaps the training weights back.
+
+Checkpoint support
+------------------
+:meth:`EMAModel.state_dict` / :meth:`EMAModel.load_state_dict` serialise
+the shadow parameters so that EMA state is preserved across restarts.
+
 Usage::
 
     from train.utils.ema import EMAModel

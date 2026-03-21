@@ -1,18 +1,32 @@
 #!/usr/bin/env python3
 """Analyze a completed WandB sweep and export the best configuration.
 
-Fetches all completed runs from a WandB sweep, ranks them by validation loss,
-prints a summary table with parameter importance analysis, and exports the
-best configuration as a YAML file.
+Fetches all completed runs from a WandB sweep, ranks them by validation
+loss, prints a summary table with parameter importance analysis, and
+exports the best configuration as a YAML file.
 
-Usage:
-    uv run python scripts/analyze_sweep.py --sweep-id <entity/project/sweep_id> \\
+Workflow
+--------
+1. **Fetch** -- Download all finished runs from the WandB API.
+2. **Rank** -- Sort by ``val_loss`` ascending; display the top-K.
+3. **Importance** -- Compute absolute Spearman rank correlation between
+   each numeric hyperparameter and ``val_loss`` to highlight which knobs
+   matter most.
+4. **Export** -- Optionally merge the best run's hyperparameters into a
+   base experiment YAML so the result can be used directly with
+   ``train/train_mimi.py``.
+5. **Log** -- Create a ``sweep-analysis`` run in WandB with the summary.
+
+Usage::
+
+    uv run python scripts/analyze_sweep.py \\
+        --sweep-id <entity/project/sweep_id> \\
         --output configs/experiments/mimi_turkish_sample_best.yaml \\
         [--top-k 5]
 
 Prerequisites:
-    - Environment set up via scripts/setup.sh
-    - WandB login (wandb login)
+    - Environment set up via ``scripts/setup.sh``
+    - WandB login (``wandb login``)
     - A completed or partially completed sweep
 
 License: MIT
@@ -120,12 +134,14 @@ def compute_parameter_importance(
         A dictionary mapping parameter names to their absolute correlation
         with val_loss, sorted by importance descending.
     """
+    # Need at least 3 runs for a meaningful rank correlation.
     if len(finished_runs) < 3:
         return {}
 
     val_losses = np.array([r.summary.get("val_loss", float("inf")) for r in finished_runs])
 
-    # Collect numeric hyperparameters
+    # Collect all numeric hyperparameters across runs, skipping WandB
+    # internal keys (prefixed with ``_``) and the version marker.
     param_values: dict[str, list[float]] = {}
     for run in finished_runs:
         for key, value in run.config.items():
@@ -136,19 +152,24 @@ def compute_parameter_importance(
 
     importance: dict[str, float] = {}
     for param_name, values in param_values.items():
+        # Skip parameters that weren't logged for every run.
         if len(values) != len(finished_runs):
             continue
         arr = np.array(values)
+        # Skip constant parameters -- zero variance means correlation
+        # is undefined.
         if np.std(arr) < 1e-12:
             continue
 
-        # Spearman rank correlation
+        # Spearman rank correlation is robust to non-linear monotonic
+        # relationships and outliers in val_loss.
         from scipy.stats import spearmanr
 
         corr, _ = spearmanr(arr, val_losses)
         importance[param_name] = abs(float(corr))
 
-    # Sort by importance descending
+    # Sort by importance descending so the most influential knobs
+    # appear first.
     return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
 
 
@@ -186,27 +207,30 @@ def export_best_config(
         base_config_path: Optional path to a base experiment config YAML.
         output_path: Path to write the output YAML.
     """
-    # Load base config if available
+    # Load the base experiment config so we preserve all non-sweep
+    # settings (codec, dataset, output_dir, etc.).
     if base_config_path and base_config_path.exists():
         with open(base_config_path) as f:
             config = yaml.safe_load(f) or {}
     else:
         config = {}
 
-    # Merge winning hyperparameters
+    # Strip WandB internal keys from the sweep hyperparameters.
     sweep_params = {
         k: v
         for k, v in best_run.config.items()
         if not k.startswith("_") and k != "wandb_version"
     }
 
-    # Place sweep params under training section if it exists
+    # Nest sweep params under "training" when the base config uses that
+    # structure; otherwise place them at the top level.
     if "training" in config:
         config["training"].update(sweep_params)
     else:
         config.update(sweep_params)
 
-    # Add metadata
+    # Attach provenance metadata so the exported config can be traced
+    # back to the sweep run that produced it.
     config.setdefault("_sweep_metadata", {})
     config["_sweep_metadata"]["source_run_id"] = best_run.id
     config["_sweep_metadata"]["val_loss"] = best_run.summary.get("val_loss")
@@ -297,7 +321,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Entry point for sweep analysis."""
+    """Entry point for sweep analysis.
+
+    Parses CLI arguments, fetches sweep runs from WandB, prints the
+    ranked summary table and parameter importance, optionally exports
+    the best config YAML, and logs a sweep-analysis summary run.
+    """
     args = parse_args()
 
     # Fetch runs

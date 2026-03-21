@@ -94,6 +94,42 @@ uv run python scripts/analyze_sweep.py --sweep-id <entity/project/sweep_id> \
 
 ---
 
+## Project Structure
+
+```
+codec-finetuning/
+├── configs/
+│   ├── base.yaml                    # Shared defaults (optimizer, scheduler, training)
+│   ├── codecs/                      # Per-codec configs (mimi, dualcodec, kanade)
+│   ├── datasets/                    # Per-dataset configs (hindi, turkish, lahaja)
+│   ├── experiments/                 # Composed configs (base + codec + dataset)
+│   └── sweeps/                      # WandB sweep parameter spaces
+├── train/
+│   ├── train_mimi.py                # Mimi GAN training loop
+│   ├── optimizer_factory.py         # 8-optimizer factory with metadata
+│   ├── sweep_agent.py               # WandB Bayesian sweep agent
+│   ├── config_loader.py             # Hierarchical YAML config with _bases_ merging
+│   └── utils/                       # EMA, augmentation, discriminator, loss balancer, Muon
+├── eval/
+│   ├── run_all.py                   # Unified 6-stage pipeline with auto-resume
+│   ├── reconstruct.py               # Batched GPU encode/decode (Stage 1)
+│   ├── measure_ssnr.py              # Parallel SSNR computation (Stage 2)
+│   ├── measure_ttfat.py             # Streaming latency benchmark (Stage 3)
+│   ├── bootstrap_eval.py            # Parallel PESQ/STOI/DNSMOS/MCD (Stage 4)
+│   ├── run_versa.sh                 # Sharded VERSA evaluation (Stage 5)
+│   ├── log_to_wandb.py              # WandB publisher (Stage 6)
+│   └── codec_registry.py            # Codec extension point (load + encode_decode hooks)
+├── scripts/
+│   ├── prepare_lahaja.py            # Lahaja eval dataset preparation
+│   └── analyze_sweep.py             # Extract best config from sweep
+├── prepare_data.py                  # Dataset download, resample, split
+├── pyproject.toml                   # Dependencies (torch, wandb, torchcodec, etc.)
+└── tests/
+    └── test_repo_standards.py       # Unit tests
+```
+
+---
+
 ## Prerequisites
 
 | Requirement | Details |
@@ -131,7 +167,7 @@ This installs:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv sync --extra train --extra eval
+uv sync --extra all              # or: uv sync --extra train --extra eval --extra dev
 uv pip install flash-attn==2.8.3 --no-build-isolation
 
 # VERSA comprehensive evaluation toolkit (installed separately due to a
@@ -184,6 +220,28 @@ Or via the convenience script:
 
 ```bash
 bash scripts/download_data.sh hindi
+```
+
+### Lahaja Hindi Eval (~6 h -- external eval benchmark)
+
+[Lahaja-eval](https://huggingface.co/datasets/tiny-aya-translate/lahaja-eval)
+is a public Hindi evaluation-only dataset (3076 utterances, ~6.2 h, 132
+speakers).  It is used to evaluate fine-tuned codecs on out-of-distribution
+Hindi speech.
+
+```bash
+uv run --extra all python scripts/prepare_lahaja.py
+```
+
+This downloads the dataset via HuggingFace, decodes audio through
+**torchcodec** (the `datasets` library Audio feature), resamples to 24 kHz,
+and writes WAV files + manifest to `data/lahaja/test/`.  To evaluate:
+
+```bash
+uv run python eval/run_all.py \
+    --config configs/experiments/mimi_lahaja.yaml \
+    --checkpoint outputs/mimi_hindi/checkpoint_step_50000.pt \
+    --use-ema
 ```
 
 ### Turkish Full (~100 h -- Phase 2, placeholder)
@@ -449,12 +507,26 @@ uv run python eval/run_all.py \
 
 Stages run in order:
 
-1. **Reconstruction** -- encode/decode test utterances through the codec
-2. **SSNR** -- segmental signal-to-noise ratio
-3. **TTFAT** -- time to first audio token latency
-4. **Bootstrap** -- PESQ, STOI, DNSMOS, MCD with 95% confidence intervals
-5. **VERSA** -- comprehensive 90+ metric suite
-6. **WandB publish** -- aggregate all results into a single WandB eval run
+| Stage | Name | Technique | Description |
+|:-----:|------|-----------|-------------|
+| 1 | **Reconstruction** | Batched GPU (bs=32) | Encode/decode test utterances through the codec |
+| 2 | **SSNR** | Parallel CPU (16 workers) | Segmental signal-to-noise ratio |
+| 3 | **TTFAT** | GPU micro-benchmark | Time to first audio token latency |
+| 4 | **Bootstrap** | Parallel CPU (16 workers) | PESQ, STOI, DNSMOS, MCD with 95% CIs |
+| 5 | **VERSA** | Sharded parallel (4 processes) | Comprehensive 90+ metric suite |
+| 6 | **WandB publish** | Single process | Aggregate all results into one WandB eval run |
+
+Stages 2 and 3 run **concurrently** (SSNR is CPU-only, TTFAT is GPU-only).
+
+#### Performance (H100 + 16 CPU cores, 1665 utterances)
+
+| Stage | Before | After | Speedup |
+|-------|-------:|------:|--------:|
+| Reconstruction | ~26 s | ~4-8 s | ~4x (batched GPU) |
+| SSNR | ~26 s | ~2-4 s | ~8x (process pool) |
+| Bootstrap | ~42 min | ~3 min | ~14x (process pool) |
+| VERSA | ~212 min | ~55 min | ~4x (sharded parallel) |
+| **Total** | **~4.7 h** | **~1.0 h** | **~4.7x** |
 
 Results are saved locally to `results/` (JSON + human-readable report) and
 published to WandB. A state file (`results/<experiment>_eval_state.json`)

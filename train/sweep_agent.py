@@ -1,19 +1,38 @@
 """WandB sweep agent for codec-finetuning hyperparameter search.
 
-This script is the entry point for WandB sweep runs. It receives hyperparameters
-from the WandB sweep controller, applies them to the base experiment config,
-and runs a single training job.
+This script is the entry point for WandB sweep runs.  It receives
+hyperparameters from the WandB sweep controller, applies them to the
+base experiment config, and runs a single training job.
 
-Usage:
-    This script is called automatically by ``wandb agent``. Do not run directly.
-    Instead, use::
+Sweep flow
+----------
+1. ``wandb agent`` spawns this script as a subprocess.
+2. :func:`main` calls ``wandb.init()`` which populates
+   ``wandb.config`` with the trial's hyperparameter values.
+3. The ``codec`` and ``dataset_config`` keys are popped to locate the
+   correct base experiment YAML.
+4. :func:`~train.config_loader.apply_sweep_overrides` maps the
+   remaining flat sweep parameters onto the nested config dict.
+5. The resolved config is validated and dispatched to the appropriate
+   codec training function (Mimi uses a direct Python call; DualCodec
+   and Kanade use subprocess-based launchers).
 
-        bash scripts/run_sweep.sh mimi
+Supported codecs
+----------------
+- **mimi** — calls :func:`train.train_mimi.train` in-process.
+- **dualcodec** — delegates to ``train/train_dualcodec.sh`` via
+  ``subprocess``.
+- **kanade** — delegates to ``train/train_kanade.sh`` via
+  ``subprocess``.
 
-    Or manually::
+Usage::
 
-        wandb sweep configs/sweeps/mimi_sweep.yaml
-        wandb agent <sweep_id>
+    # Do NOT run this script directly.  Use the sweep helper:
+    bash scripts/run_sweep.sh mimi
+
+    # Or manually:
+    wandb sweep configs/sweeps/mimi_sweep.yaml
+    wandb agent <sweep_id>
 
 License: MIT
 """
@@ -74,40 +93,43 @@ def main() -> None:
     )
     parser.parse_args()
 
-    # Initialize WandB run (sweep controller provides the config)
+    # ── Step 1: WandB initialisation ────────────────────────────────────
+    # wandb.init() contacts the sweep controller and populates
+    # wandb.config with the trial's hyperparameter sample.
     run = wandb.init()
     sweep_params: dict = dict(wandb.config)
 
-    # Determine codec and load base config
+    # ── Step 2: Determine codec and dataset ──────────────────────────────
+    # These two meta-keys are consumed here and removed before the
+    # remaining sweep_params are forwarded to apply_sweep_overrides.
     codec: str = sweep_params.pop("codec", "mimi")
     dataset_config: str = sweep_params.pop(
         "dataset_config", "configs/datasets/turkish_sample.yaml"
     )
 
-    # Load the base experiment config for this codec + dataset.
-    # Map codec name to experiment config.
+    # ── Step 3: Load the base experiment config ──────────────────────────
+    # Convention: experiment configs live at
+    # configs/experiments/{codec}_{dataset_name}.yaml
     dataset_name: str = Path(dataset_config).stem  # e.g., "turkish_sample"
     experiment_config_path: str = f"configs/experiments/{codec}_{dataset_name}.yaml"
 
     config: dict = load_config(experiment_config_path)
 
-    # Apply sweep overrides
+    # ── Step 4: Apply sweep hyperparameter overrides ─────────────────────
     config = apply_sweep_overrides(config, sweep_params)
 
-    # Update WandB tags
+    # Tag the WandB run for easy filtering in the dashboard.
     config["wandb"]["tags"] = [codec, dataset_name, "sweep"]
     config["wandb"]["run_name"] = f"{codec}-sweep-{run.id}"
 
-    # Update output dir to be sweep-specific
+    # Isolate sweep outputs so they don't overwrite manual runs.
     config["output_dir"] = f"outputs/sweeps/{codec}_{dataset_name}/{run.id}"
 
-    # Validate
+    # ── Step 5: Validate and log resolved config ─────────────────────────
     validate_config(config)
-
-    # Log full config to WandB
     wandb.config.update({"resolved_config": config}, allow_val_change=True)
 
-    # Import and run the appropriate training function
+    # ── Step 6: Dispatch to the correct training pipeline ────────────────
     if codec == "mimi":
         from train.train_mimi import train
 

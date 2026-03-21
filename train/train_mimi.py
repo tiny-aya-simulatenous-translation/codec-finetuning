@@ -5,14 +5,39 @@ tracking, gradient-balanced multi-loss optimisation, and waveform
 augmentation.  Supports all 8 optimizers from the factory, including
 Schedule-Free variants that require special eval-mode handling.
 
+Architecture
+------------
+The training loop follows a GAN-style alternating optimisation scheme:
+
+1. **Generator forward pass** — encode→quantise→decode through the Mimi
+   model, producing reconstruction and (optional) commitment losses.
+2. **Discriminator step** (after warmup) — update the multi-scale STFT
+   discriminator with hinge loss + R1 gradient penalty.
+3. **Generator adversarial step** — compute adversarial and
+   feature-matching losses against the updated discriminator.
+4. **Loss balancing** — if enabled, the :class:`~train.utils.loss_balancer.LossBalancer`
+   rescales each loss term by its gradient norm so no single objective
+   dominates the shared encoder/decoder update.
+5. **Gradient accumulation + clipping** — gradients are accumulated over
+   ``grad_accum_steps`` micro-batches before a single optimizer step.
+
+Robustness
+----------
+- **NaN recovery**: three consecutive NaN losses trigger an automatic LR
+  halving and reload from the last checkpoint.
+- **Graceful shutdown**: SIGTERM / SIGINT handlers save a checkpoint
+  before exiting.
+- **Atomic checkpointing**: write-then-rename prevents partial saves on
+  crashes.
+
 Usage::
 
-    uv run python train/train_mimi.py \
+    uv run python train/train_mimi.py \\
         --config configs/experiments/mimi_turkish_sample.yaml
 
     # Resume from a checkpoint:
-    uv run python train/train_mimi.py \
-        --config configs/experiments/mimi_turkish_sample.yaml \
+    uv run python train/train_mimi.py \\
+        --config configs/experiments/mimi_turkish_sample.yaml \\
         --resume outputs/mimi_turkish_sample/checkpoint_step_2000.pt
 
 License: MIT
@@ -283,9 +308,11 @@ def _create_scheduler(
     min_lr_ratio: float = float(sched_cfg.get("min_lr_ratio", 0.01))
 
     if name == "cosine":
+        # Number of post-warmup steps over which the cosine decay occurs.
         decay_steps = max(max_steps - warmup_steps, 1)
 
         def _cosine_decay(step: int) -> float:
+            # Maps step ∈ [0, decay_steps] to a cosine curve from 1 → min_lr_ratio.
             progress = min(step / decay_steps, 1.0)
             cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
             return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
@@ -316,6 +343,9 @@ def _create_scheduler(
             "Supported: 'cosine', 'linear', 'constant'."
         )
 
+    # For cosine schedules, prepend a linear warmup phase using
+    # SequentialLR so the LR ramps from 0 → base_lr over warmup_steps,
+    # then decays via the cosine curve for the remaining steps.
     if name == "cosine" and warmup_steps > 0:
 
         def _linear_warmup(step: int) -> float:
@@ -703,10 +733,14 @@ def train(config: Dict[str, Any]) -> None:
     signal.signal(signal.SIGINT, _signal_handler)
 
     # ── Training loop ────────────────────────────────────────────────────
+    # Infinite iteration over the training loader; StopIteration triggers
+    # epoch rollover inside the loop below.
     data_iter = iter(train_loader)
     consecutive_nans = 0
     last_ckpt_path = resume_path
     model.train()
+    # Schedule-Free optimizers maintain an internal eval/train toggle that
+    # must be set to train mode before the optimisation loop begins.
     if metadata.get("needs_eval_mode"):
         optimizer.train()
     optimizer.zero_grad()
@@ -735,24 +769,33 @@ def train(config: Dict[str, Any]) -> None:
                 audio = augment_batch(audio, sr, aug_config)
 
             # ── Generator forward ────────────────────────────────────
+            # Mixed-precision (bfloat16) forward pass through the full
+            # Mimi encode → quantise → decode pipeline.
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 output = model(audio)
                 reconstructed = output.audio_values
 
                 losses: Dict[str, torch.Tensor] = {}
+                # L1 time-domain reconstruction loss.
                 losses["reconstruction"] = (
                     F.l1_loss(reconstructed, audio) * recon_weight
                 )
 
+                # VQ commitment loss from the quantiser (if present).
                 if commit_weight > 0 and hasattr(output, "quantizer_loss") and output.quantizer_loss is not None:
                     losses["commitment"] = (
                         output.quantizer_loss * commit_weight
                     )
 
             # ── Discriminator step (after warmup) ────────────────────
+            # The discriminator is frozen for the first ``disc_warmup``
+            # steps so the generator can learn a rough reconstruction
+            # before adversarial pressure is applied.
             if step > disc_warmup:
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     real_logits, real_features = discriminator(audio)
+                    # Detach reconstructed audio to avoid back-propagating
+                    # discriminator gradients into the generator.
                     fake_logits, fake_features = discriminator(
                         reconstructed.detach()
                     )
@@ -760,7 +803,9 @@ def train(config: Dict[str, Any]) -> None:
                         real_logits, fake_logits
                     )
 
-                    # R1 penalty every 16 steps.
+                    # R1 gradient penalty on real data — applied every 16
+                    # steps as a cost/benefit trade-off (it requires a
+                    # second backward through the discriminator).
                     if r1_weight > 0 and step % 16 == 0:
                         audio_r1 = audio.detach().requires_grad_(True)
                         r1 = r1_penalty(audio_r1, discriminator)
@@ -770,7 +815,9 @@ def train(config: Dict[str, Any]) -> None:
                 disc_loss.backward()
                 disc_optimizer.step()
 
-                # Generator adversarial + feature matching.
+                # Generator adversarial + feature-matching losses.
+                # Re-run the discriminator on reconstructed audio *with*
+                # gradients so that the generator receives the signal.
                 with torch.autocast("cuda", dtype=torch.bfloat16):
                     fake_logits_gen, fake_features_gen = discriminator(
                         reconstructed
@@ -786,6 +833,9 @@ def train(config: Dict[str, Any]) -> None:
                     )
 
             # ── Balance and combine losses ───────────────────────────
+            # When the loss balancer is active, each term is rescaled by
+            # the inverse of its gradient norm (w.r.t. the reconstructed
+            # audio) so that no single loss dominates the shared update.
             if loss_balancer is not None:
                 total_loss = loss_balancer.balance(
                     losses, reconstructed
@@ -824,9 +874,13 @@ def train(config: Dict[str, Any]) -> None:
                 consecutive_nans = 0
 
             # ── Backward + gradient accumulation ─────────────────────
+            # Scale the loss by 1/grad_accum_steps so that the effective
+            # gradient magnitude is independent of the accumulation count.
             scaled_loss = total_loss / grad_accum_steps
             scaled_loss.backward()
 
+            # Perform an optimiser step only after accumulating gradients
+            # over ``grad_accum_steps`` micro-batches.
             if step % grad_accum_steps == 0:
                 torch.nn.utils.clip_grad_norm_(
                     model.parameters(), max_grad_norm

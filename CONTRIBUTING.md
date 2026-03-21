@@ -1,8 +1,9 @@
 # Contributing to codec-finetuning
 
 Thank you for your interest in contributing! This document covers code style,
-how to extend the benchmark (datasets, codecs, optimizers, metrics), and the
-pull-request process.
+documentation conventions, the evaluation pipeline architecture, how to extend
+the benchmark (datasets, codecs, optimizers, metrics), and the pull-request
+process.
 
 ---
 
@@ -11,16 +12,257 @@ pull-request process.
 | Rule | Detail |
 |------|--------|
 | Standard | PEP-8 |
-| Linter | **ruff** (Google convention) |
+| Linter | **Ruff** (with Google docstring convention) |
 | Line length | 100 characters max |
-| Docstrings | Google-style on **all** functions |
+| Docstrings | Google-style on **all** public functions and classes |
 | Type hints | Required on all function signatures |
 | License header | MIT license header in every module docstring |
 
 Run the linter before submitting any changes:
 
 ```bash
-uv run ruff check .
+uv sync --extra all                   # install everything (train + eval + dev)
+uv run ruff check .                  # lint all files
+uv run ruff check --fix .            # auto-fix safe violations
+```
+
+> **Note:** Ruff is in the `dev` optional dependency group.  The recommended
+> way to install everything at once is `uv sync --extra all`, which pulls in
+> `train`, `eval`, and `dev` in one shot.  See [agents.md](agents.md) for the
+> full dependency rules and documentation standards.
+
+### Why Ruff?
+
+[Ruff](https://docs.astral.sh/ruff/) is an extremely fast Python linter and
+formatter written in Rust by [Astral](https://astral.sh/) (the same team that
+builds `uv`, the package manager used in this project).  It replaces multiple
+tools -- flake8, isort, pycodestyle, pyflakes, pydocstyle, and pyupgrade --
+with a single binary that runs 10-100x faster than any of them individually.
+
+**Why it matters for contributors:**
+
+- **Speed** -- Ruff checks the entire codebase in under 1 second, so there is
+  no excuse not to run it before every commit.  Traditional linters (flake8 +
+  isort + pydocstyle) take 5-10 seconds on a project this size.
+- **Single tool** -- Instead of configuring and running flake8, isort, and
+  pydocstyle separately, Ruff handles all of them from one config block in
+  `pyproject.toml`.  Fewer tools means fewer version conflicts and simpler CI.
+- **Unified config** -- Everything lives in `pyproject.toml` under
+  `[tool.ruff]`.  No `.flake8`, `.isort.cfg`, or `.pydocstyle` files to
+  maintain.
+- **Auto-fixable** -- Many Ruff rules (import sorting, unused imports,
+  deprecated syntax) can be auto-fixed with `ruff check --fix`.
+
+### Enabled rule sets
+
+The project enables the following Ruff rule sets (configured in
+`pyproject.toml` under `[tool.ruff.lint]`):
+
+| Code | Rule set | What it catches |
+|------|----------|-----------------|
+| `E` | pycodestyle errors | Syntax errors, indentation, whitespace |
+| `F` | pyflakes | Unused imports, undefined names, redefined variables |
+| `W` | pycodestyle warnings | Trailing whitespace, blank lines, line length |
+| `I` | isort | Import ordering (stdlib, third-party, local) |
+| `D` | pydocstyle | Missing or malformed docstrings |
+| `UP` | pyupgrade | Deprecated syntax (e.g. `dict()` -> `{}`, old-style type hints) |
+
+### Google docstring convention
+
+The `D` (pydocstyle) rules are configured with `convention = "google"` in
+`[tool.ruff.lint.pydocstyle]`.  This enforces the
+[Google Python Style Guide](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings)
+docstring format, which uses indented section headers like `Args:`,
+`Returns:`, `Raises:`, and `Example:` rather than the numpy-style
+underline-based sections or plain PEP 257.
+
+Google-style was chosen because:
+
+- It is **more compact** than numpy-style (no underlines, fewer blank lines),
+  which matters when every function needs a docstring.
+- It is the **most widely understood** format in the ML/audio research
+  community (PyTorch, JAX, and TensorFlow all use it).
+- It renders cleanly in **IDEs** (VS Code, PyCharm) and **Sphinx** (via the
+  `napoleon` extension) without additional configuration.
+
+Example of a correctly formatted Google-style docstring:
+
+```python
+def compute_ssnr(
+    original: np.ndarray,
+    reconstructed: np.ndarray,
+    sample_rate: int,
+    segment_ms: float = 25.0,
+) -> float:
+    """Compute Segmental Signal-to-Noise Ratio for one utterance.
+
+    Segments the waveform into overlapping frames, computes per-frame
+    SNR, and returns the mean across non-silent frames.
+
+    Args:
+        original: Reference audio as a 1-D numpy array.
+        reconstructed: Degraded audio as a 1-D numpy array.
+        sample_rate: Audio sample rate in Hz.
+        segment_ms: Frame length in milliseconds.
+
+    Returns:
+        Mean SSNR in dB.
+
+    Raises:
+        ValueError: If the arrays have incompatible shapes.
+    """
+```
+
+---
+
+## Documentation Conventions
+
+Every Python file in this project follows a consistent documentation pattern.
+Please maintain this standard in all contributions.
+
+### Module-level docstrings
+
+Every `.py` file must start with a module docstring that includes:
+
+1. **One-line summary** -- what the module does.
+2. **Extended description** -- how it works, key algorithms.
+3. **Performance section** (where applicable) -- before/after timings,
+   technique used (e.g. batching, multiprocessing), measured on which
+   hardware.
+4. **Pipeline position** (for eval modules) -- which stage number this is
+   in the `run_all.py` pipeline, and what it depends on.
+5. **Usage example** -- a runnable `uv run` command.
+6. **License** -- `License: MIT`.
+
+Example (from `eval/bootstrap_eval.py`):
+
+```python
+"""Bootstrap resampling evaluation for error bars.
+
+Computes per-utterance quality metrics (PESQ, STOI, DNSMOS, MCD)...
+
+Performance
+-----------
+**Parallel per-utterance metric computation** (added 2026-03-21):
+    Before: ~42 min (sequential)
+    After:  ~3 min  (16-worker process pool)
+
+Pipeline position
+-----------------
+This module is **Stage 4** of the unified evaluation pipeline.
+
+Usage::
+    uv run python eval/bootstrap_eval.py --experiment mimi_hindi
+
+License: MIT
+"""
+```
+
+### Function/method docstrings
+
+Use Google-style with `Args`, `Returns`, `Raises` sections:
+
+```python
+def compute_ssnr(original: np.ndarray, reconstructed: np.ndarray, ...) -> float:
+    """Compute Segmental Signal-to-Noise Ratio for one utterance.
+
+    Args:
+        original: Original audio as a 1-D numpy array.
+        reconstructed: Reconstructed audio as a 1-D numpy array.
+
+    Returns:
+        Mean SSNR in dB across non-silent segments.
+
+    Raises:
+        ValueError: If arrays have incompatible shapes.
+    """
+```
+
+### Inline comments
+
+Add comments for:
+- **Non-obvious math** (e.g. MCD formula, SNR calculation).
+- **Performance-critical decisions** (e.g. why `chunksize=32`, why sort by
+  length before batching).
+- **Worker functions** -- explain they are pool workers and why they take a
+  tuple argument.
+- **Module-level constants** -- explain what they control and valid ranges.
+
+### Config YAML files
+
+Every YAML config field should have an inline comment explaining its purpose,
+valid range, and default value.  See `configs/base.yaml` for the reference
+style.
+
+---
+
+## Evaluation Pipeline Architecture
+
+The unified evaluation pipeline (`eval/run_all.py`) orchestrates 6 stages
+with automatic resume, concurrent execution, and parallel computation.
+Understanding this architecture is essential for contributing evaluation
+changes.
+
+### Stage execution flow
+
+```
+Stage 1: Reconstruction (GPU, batched)
+    ↓
+Stage 2: SSNR ─────────┐
+                        ├── concurrent (ThreadPoolExecutor, 2 workers)
+Stage 3: TTFAT ─────────┘   SSNR=CPU-only, TTFAT=GPU-only → zero contention
+    ↓
+Stage 4: Bootstrap (CPU, ProcessPoolExecutor, 16 workers)
+    ↓
+Stage 5: VERSA (sharded, 4 parallel subprocesses)
+    ↓
+Stage 6: WandB Publish
+```
+
+### Parallelisation techniques
+
+| Stage | Technique | Implementation | Why |
+|-------|-----------|----------------|-----|
+| Reconstruction | Batched GPU inference | Sort by length, pad per batch, single `encode_decode()` call | Eliminates per-utterance GPU idle time |
+| SSNR | `ProcessPoolExecutor` | Top-level `_compute_ssnr_for_entry()` worker, `chunksize=32` | Embarrassingly parallel, CPU-only numpy |
+| SSNR + TTFAT | `ThreadPoolExecutor` | 2-thread stage-level overlap | CPU vs GPU, zero resource contention |
+| Bootstrap | `ProcessPoolExecutor` | Top-level `_compute_metrics_worker()`, `chunksize=8` | Largest bottleneck, 4 independent metrics per utterance |
+| VERSA | Sharded subprocesses | Manifest split into N scp files, N parallel `run_versa.sh` via `ThreadPoolExecutor` | External tool, can't parallelise internally |
+
+### State management
+
+The `EvalState` class persists progress to
+`results/<experiment>_eval_state.json` after every stage.  A fingerprint hash
+of `(experiment, checkpoint, split, use_ema)` detects config changes and
+invalidates stale state.  Each stage can be in one of three states:
+
+- `ok` -- completed successfully, result cached.
+- `failed` -- error recorded, will be retried on next run.
+- (absent) -- not yet attempted.
+
+### Adding a new evaluation stage
+
+1. Write a `_run_<stage>()` helper function in `run_all.py`.
+2. Add the stage to the orchestrator between the appropriate existing stages.
+3. Wrap it with `state.is_done()` / `state.mark_done()` /
+   `state.mark_failed()` for resume support.
+4. Publish its results in `_publish_to_wandb()`.
+5. Add the stage name to `STAGE_NAMES` for the failure summary.
+
+### Worker function conventions
+
+Process pool workers must be **top-level functions** (not lambdas, closures,
+or methods) because `ProcessPoolExecutor` uses `pickle` for IPC.  They accept
+a single tuple argument because `Executor.map()` requires a single-argument
+callable.
+
+```python
+def _compute_ssnr_for_entry(
+    args: Tuple[str, str, int, float, float],
+) -> float:
+    """Process-pool worker: compute SSNR for a single utterance pair."""
+    ref_path, deg_path, sample_rate, segment_ms, overlap_ms = args
+    ...
 ```
 
 ---
@@ -67,6 +309,21 @@ uv run ruff check .
        --config configs/experiments/{codec}_{dataset}.yaml \
        --skip-wandb --skip-versa
    ```
+
+### Eval-only datasets (no training split)
+
+Some datasets (e.g. Lahaja) are evaluation-only and have no training split.
+For these:
+
+1. Write a dedicated prep script under `scripts/` (see
+   `scripts/prepare_lahaja.py` as the reference implementation).
+2. Only create the `data/<name>/test/` directory with a `manifest.json`.
+3. Set `train_ratio: 0.0` and `val_ratio: 0.0` in the dataset config.
+4. The experiment config still needs training hyperparameters (they are
+   required by `config_loader.py` validation) but they will not be used --
+   copy them from the checkpoint's original training config.
+5. Use `torchcodec` (via the HuggingFace `datasets` Audio feature) for audio
+   decoding and `torchaudio` for writing WAV files -- do not use `soundfile`.
 
 ---
 

@@ -4,6 +4,29 @@ Loads experiment YAML configs, recursively resolves ``_bases_`` references
 (each base can itself reference further bases), deep-merges them in order,
 validates required fields, and optionally applies WandB sweep overrides.
 
+Design
+------
+Experiment configs follow a layered inheritance pattern:
+
+1. **Base configs** (e.g. ``configs/codecs/mimi.yaml``) define
+   codec-specific defaults (sample rate, latency, loss weights).
+2. **Dataset configs** (e.g. ``configs/datasets/turkish_sample.yaml``)
+   define data paths, language, and split information.
+3. **Experiment configs** (e.g.
+   ``configs/experiments/mimi_turkish_sample.yaml``) list their bases
+   via the ``_bases_`` key and add experiment-specific overrides.
+
+Merging is performed recursively and left-to-right: later bases override
+earlier ones, and the experiment's own keys override everything.
+
+Sweep integration
+-----------------
+:func:`apply_sweep_overrides` maps flat WandB sweep parameter names
+(e.g. ``learning_rate``, ``beta1``) to their nested config paths
+(``optimizer.lr``, ``optimizer.betas[0]``).  It also applies
+optimizer-specific adjustments (e.g. forcing ``scheduler="constant"``
+for Prodigy, boosting ``weight_decay`` for Lion).
+
 Usage::
 
     from train.config_loader import load_config, apply_sweep_overrides
@@ -174,7 +197,8 @@ def apply_sweep_overrides(
     """
     cfg = copy.deepcopy(config)
 
-    # Map flat sweep keys → nested config locations.
+    # ── Map flat sweep keys → nested config locations ──────────────────
+    # Optimizer core hyper-parameters.
     if "optimizer" in sweep_params:
         cfg["optimizer"]["name"] = sweep_params["optimizer"]
 
@@ -184,6 +208,8 @@ def apply_sweep_overrides(
     if "weight_decay" in sweep_params:
         cfg["optimizer"]["weight_decay"] = float(sweep_params["weight_decay"])
 
+    # Beta values are stored as a 2-element list; setdefault ensures the
+    # list exists before indexing into it.
     if "beta1" in sweep_params:
         cfg["optimizer"].setdefault("betas", [0.9, 0.999])
         cfg["optimizer"]["betas"][0] = float(sweep_params["beta1"])
@@ -192,6 +218,7 @@ def apply_sweep_overrides(
         cfg["optimizer"].setdefault("betas", [0.9, 0.999])
         cfg["optimizer"]["betas"][1] = float(sweep_params["beta2"])
 
+    # Scheduler settings.
     if "scheduler" in sweep_params:
         cfg.setdefault("scheduler", {})["name"] = sweep_params["scheduler"]
 
@@ -200,7 +227,7 @@ def apply_sweep_overrides(
             sweep_params["warmup_steps"]
         )
 
-    # Training params
+    # ── Training-level parameters ────────────────────────────────────────
     if "max_steps" in sweep_params:
         cfg["training"]["max_steps"] = int(sweep_params["max_steps"])
 
@@ -210,7 +237,7 @@ def apply_sweep_overrides(
     if "augmentation_preset" in sweep_params:
         cfg.setdefault("augmentation", {})["preset"] = sweep_params["augmentation_preset"]
 
-    # Discriminator params
+    # ── Discriminator parameters ─────────────────────────────────────────
     if "disc_lr_ratio" in sweep_params:
         cfg.setdefault("discriminator", {})["lr_ratio"] = float(sweep_params["disc_lr_ratio"])
 
@@ -220,11 +247,11 @@ def apply_sweep_overrides(
     if "disc_warmup_steps" in sweep_params:
         cfg.setdefault("discriminator", {})["warmup_steps"] = int(sweep_params["disc_warmup_steps"])
 
-    # EMA
+    # ── EMA ──────────────────────────────────────────────────────────────
     if "ema_decay" in sweep_params:
         cfg.setdefault("ema", {})["decay"] = float(sweep_params["ema_decay"])
 
-    # Encoder freezing
+    # ── Encoder freezing ─────────────────────────────────────────────────
     if "freeze_encoder_steps" in sweep_params:
         cfg["codec"]["training"]["freeze_encoder_steps"] = int(sweep_params["freeze_encoder_steps"])
 
