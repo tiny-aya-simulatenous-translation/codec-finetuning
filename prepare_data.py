@@ -4,6 +4,33 @@ Downloads or loads datasets from HuggingFace or local directories, resamples
 audio to 24 kHz, creates speaker-disjoint (or random) train/val/test splits,
 and writes WAV files alongside manifest JSONs consumed by the training loop.
 
+Pipeline position
+-----------------
+This script runs **before** training.  Its output directory structure is::
+
+    data/<dataset_name>/
+    ├── train/
+    │   ├── manifest.json
+    │   └── *.wav
+    ├── val/
+    │   ├── manifest.json
+    │   └── *.wav
+    └── test/
+        ├── manifest.json
+        └── *.wav
+
+The manifest JSON files are consumed by the training data-loader
+(:mod:`train.train_mimi`) and the evaluation pipeline (:mod:`eval.run_all`).
+
+Key functions
+-------------
+- :func:`prepare` -- Orchestrates the full pipeline from config load to
+  validation.
+- :func:`_load_from_huggingface` / :func:`_load_from_local` -- Data-source
+  loaders.
+- :func:`_create_splits` -- Speaker-disjoint or random partitioning.
+- :func:`_write_split` -- Resamples and writes WAV files + manifest.
+
 Usage::
 
     uv run python prepare_data.py --config configs/datasets/turkish_sample.yaml

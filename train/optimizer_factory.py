@@ -5,6 +5,34 @@ Schedule-Free AdamW, SOAP, Adan, Muon) from a unified config dictionary.
 See ``OPTIMIZERS.md`` in the project root for the full comparison table,
 memory footprints, and sweep-specific considerations.
 
+Supported optimizers
+--------------------
+===================  ============================  ============================
+Optimizer            Config name                   Notes
+===================  ============================  ============================
+AdamW                ``adamw``                     PyTorch built-in
+RAdam                ``radam``                     Rectified Adam (built-in)
+Lion                 ``lion``                      Requires ``lion-pytorch``
+Prodigy              ``prodigy``                   Auto-LR; disables scheduler
+Schedule-Free AdamW  ``schedulefree_adamw``        Needs eval-mode toggle
+SOAP                 ``soap``                      Shampoo + Adam hybrid
+Adan                 ``adan``                      3-beta optimizer
+Muon                 ``muon``                      Newton-Schulz ortho SGD
+===================  ============================  ============================
+
+Metadata flags
+--------------
+The returned ``metadata`` dict may contain the following keys consumed by
+the training loop:
+
+- ``disable_scheduler`` — skip external LR scheduling (Prodigy,
+  Schedule-Free).
+- ``disable_warmup`` — skip warmup ramp (Prodigy, Schedule-Free).
+- ``needs_eval_mode`` — call ``optimizer.eval()`` / ``optimizer.train()``
+  around validation (Schedule-Free AdamW).
+- ``adjust_wd`` — weight decay was auto-adjusted (Lion).
+- ``is_hybrid`` — the optimizer wraps two inner optimizers (Muon).
+
 Usage::
 
     from train.optimizer_factory import create_optimizer

@@ -1,7 +1,21 @@
 """Training utilities for codec-finetuning.
 
-Re-exports the key classes and functions from submodules so that
-downstream code can do::
+This sub-package bundles reusable components shared across codec
+training pipelines:
+
+- :mod:`~train.utils.augmentation` — waveform-level data augmentation
+  with preset configurations (speed perturbation, pitch shift, noise
+  injection, gain jitter, chunk reversal).
+- :mod:`~train.utils.discriminator` — multi-scale STFT discriminator
+  and associated loss functions (hinge, feature-matching, R1 penalty).
+- :mod:`~train.utils.ema` — exponential moving average model tracker
+  with swap-in/restore for evaluation.
+- :mod:`~train.utils.loss_balancer` — AudioCraft-style gradient-normalised
+  multi-loss balancer.
+- :mod:`~train.utils.muon` — vendored Muon optimizer (Newton-Schulz
+  orthogonalised SGD momentum).
+
+Re-exports the key classes and functions so that downstream code can do::
 
     from train.utils import Muon, EMAModel, LossBalancer
     from train.utils import MultiScaleSTFTDiscriminator

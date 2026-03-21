@@ -5,9 +5,15 @@ Each codec registers a :class:`CodecEvalHooks` dataclass that tells the
 evaluation pipeline how to load, encode, decode, and (optionally) run
 codec-specific metrics.
 
-To add a new codec, define its hooks and call :func:`register_codec` at
-module level, or add an entry to ``_BUILTIN_CODECS`` at the bottom of
-this file.
+Architecture
+------------
+The registry follows a **lazy-initialisation** pattern: built-in codecs
+(Mimi, DualCodec, Kanade) are registered on first access via
+:func:`_ensure_builtins`, avoiding import-time side effects from heavy
+dependencies like ``transformers`` or ``dualcodec``.
+
+Third-party codecs can be added at any time by calling
+:func:`register_codec` with a :class:`CodecEvalHooks` instance.
 
 Usage::
 
@@ -30,20 +36,27 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+# Type aliases for the three hook callables.  These are used in the
+# CodecEvalHooks dataclass to enforce a consistent function signature
+# across all registered codecs.
+
 LoadFn = Callable[
     [Dict[str, Any], Optional[str], bool, torch.device],
     Any,
 ]
+"""Signature: ``(config, checkpoint_path, use_ema, device) -> model``."""
 
 EncodeDecodeFn = Callable[
     [Any, torch.Tensor],
     torch.Tensor,
 ]
+"""Signature: ``(model, waveform) -> reconstructed_waveform``."""
 
 CodecMetricFn = Callable[
     [Dict[str, Any], str, Any],
     Dict[str, Any],
 ]
+"""Signature: ``(config, experiment_name, results_dir) -> metrics_dict``."""
 
 
 @dataclass
@@ -68,6 +81,7 @@ class CodecEvalHooks:
     extra_metrics: List[Tuple[str, CodecMetricFn]] = field(default_factory=list)
 
 
+# Central registry mapping lowercase codec names to their hook objects.
 _REGISTRY: Dict[str, CodecEvalHooks] = {}
 
 
@@ -129,23 +143,41 @@ def registered_codecs() -> List[str]:
 # Built-in codec implementations
 # ---------------------------------------------------------------------------
 
+# Guard flag so that _ensure_builtins() runs at most once per process.
 _BUILTINS_LOADED = False
 
 
 def _ensure_builtins() -> None:
-    """Lazily register the three built-in codecs on first access."""
+    """Lazily register the three built-in codecs on first access.
+
+    Called automatically by :func:`get_codec_hooks` and
+    :func:`registered_codecs`.  Uses a module-level guard flag to ensure
+    the built-in hooks are constructed at most once.
+    """
     global _BUILTINS_LOADED
     if _BUILTINS_LOADED:
         return
     _BUILTINS_LOADED = True
 
     for hooks in _builtin_codecs():
+        # Skip if a user already registered a custom version of this codec.
         if hooks.name not in _REGISTRY:
             _REGISTRY[hooks.name] = hooks
 
 
 def _strip_compile_prefix(state_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip the ``_orig_mod.`` prefix added by ``torch.compile``."""
+    """Strip the ``_orig_mod.`` prefix added by ``torch.compile``.
+
+    When a model is saved after ``torch.compile``, all parameter keys are
+    prefixed with ``_orig_mod.``.  This must be removed before calling
+    ``model.load_state_dict()`` on the un-compiled model instance.
+
+    Args:
+        state_dict: Raw state dict loaded from a checkpoint file.
+
+    Returns:
+        A new dict with the ``_orig_mod.`` prefix removed from all keys.
+    """
     prefix = "_orig_mod."
     return {
         (k[len(prefix):] if k.startswith(prefix) else k): v
@@ -158,7 +190,21 @@ def _load_checkpoint_state(
     use_ema: bool,
     device: torch.device,
 ) -> Optional[Dict[str, Any]]:
-    """Load and prefix-strip a state dict from a checkpoint file."""
+    """Load and prefix-strip a state dict from a checkpoint file.
+
+    Checkpoint files produced by the training loop contain both a regular
+    ``model_state_dict`` and (optionally) an ``ema_state_dict``.  When
+    *use_ema* is ``True`` and the EMA key exists, it takes precedence.
+
+    Args:
+        checkpoint: Path to a ``.pt`` checkpoint file.
+        use_ema: Prefer EMA weights if available.
+        device: Device to map tensors to during loading.
+
+    Returns:
+        The prefix-stripped state dict, or ``None`` if the checkpoint
+        contains neither expected key.
+    """
     ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
     if use_ema and "ema_state_dict" in ckpt:
         logger.info("Loading EMA weights from checkpoint.")
@@ -177,6 +223,17 @@ def _load_mimi(
     use_ema: bool,
     device: torch.device,
 ) -> Any:
+    """Load a Mimi codec model from HuggingFace ``transformers``.
+
+    Args:
+        config: Experiment config; must contain ``config["codec"]["pretrained"]``.
+        checkpoint: Optional fine-tuned checkpoint path.
+        use_ema: Whether to prefer EMA weights from the checkpoint.
+        device: Target device (CPU or CUDA).
+
+    Returns:
+        The loaded :class:`transformers.MimiModel` in eval mode.
+    """
     from transformers import MimiModel
 
     model = MimiModel.from_pretrained(config["codec"]["pretrained"])
@@ -188,6 +245,15 @@ def _load_mimi(
 
 
 def _encode_decode_mimi(model: Any, waveform: torch.Tensor) -> torch.Tensor:
+    """Encode *waveform* to Mimi tokens and decode back to audio.
+
+    Args:
+        model: A loaded :class:`transformers.MimiModel`.
+        waveform: Input tensor of shape ``(batch, 1, samples)``.
+
+    Returns:
+        Reconstructed audio tensor.
+    """
     tokens = model.encode(waveform)
     return model.decode(tokens.audio_codes).audio_values
 
@@ -200,6 +266,17 @@ def _load_dualcodec(
     use_ema: bool,
     device: torch.device,
 ) -> Any:
+    """Load a DualCodec model.
+
+    Args:
+        config: Experiment config; must contain ``config["codec"]["pretrained"]``.
+        checkpoint: Optional fine-tuned checkpoint path.
+        use_ema: Whether to prefer EMA weights from the checkpoint.
+        device: Target device (CPU or CUDA).
+
+    Returns:
+        The loaded DualCodec model in eval mode.
+    """
     import dualcodec
 
     model = dualcodec.load_model(config["codec"]["pretrained"])
@@ -211,6 +288,15 @@ def _load_dualcodec(
 
 
 def _encode_decode_dualcodec(model: Any, waveform: torch.Tensor) -> torch.Tensor:
+    """Encode *waveform* to DualCodec tokens and decode back to audio.
+
+    Args:
+        model: A loaded DualCodec model.
+        waveform: Input tensor of shape ``(batch, 1, samples)``.
+
+    Returns:
+        Reconstructed audio tensor.
+    """
     tokens = model.encode(waveform)
     return model.decode(tokens)
 
@@ -223,6 +309,17 @@ def _load_kanade(
     use_ema: bool,
     device: torch.device,
 ) -> Any:
+    """Load a Kanade tokenizer model.
+
+    Args:
+        config: Experiment config; must contain ``config["codec"]["pretrained"]``.
+        checkpoint: Optional fine-tuned checkpoint path.
+        use_ema: Whether to prefer EMA weights from the checkpoint.
+        device: Target device (CPU or CUDA).
+
+    Returns:
+        The loaded Kanade model in eval mode.
+    """
     import kanade_tokenizer
 
     model = kanade_tokenizer.load_model(config["codec"]["pretrained"])
@@ -234,6 +331,15 @@ def _load_kanade(
 
 
 def _encode_decode_kanade(model: Any, waveform: torch.Tensor) -> torch.Tensor:
+    """Encode *waveform* to Kanade tokens and decode back to audio.
+
+    Args:
+        model: A loaded Kanade tokenizer model.
+        waveform: Input tensor of shape ``(batch, 1, samples)``.
+
+    Returns:
+        Reconstructed audio tensor.
+    """
     tokens = model.encode(waveform)
     return model.decode(tokens)
 

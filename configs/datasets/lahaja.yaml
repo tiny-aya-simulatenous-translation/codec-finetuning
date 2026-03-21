@@ -1,0 +1,53 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# LAHAJA EVAL DATASET -- ~6h Hindi eval set (eval-only, no training)
+#
+# Source:   HuggingFace (public, no auth required)
+# Repo:     tiny-aya-translate/lahaja-eval
+# Stats:    3076 utterances, ~6.2h, 132 speakers, Hindi
+# Split:    test only (this is an evaluation-only dataset)
+#
+# Preparation:
+#   uv run --extra all python scripts/prepare_lahaja.py
+#
+# The prep script downloads via HuggingFace datasets, decodes audio through
+# torchcodec, resamples to 24 kHz, and writes WAV + manifest.json to
+# data/lahaja/test/.  It does NOT create train/ or val/ directories.
+#
+# After filtering (min 0.5s, max 30s): 3044 utterances retained.
+# ══════════════════════════════════════════════════════════════════════════════
+
+dataset:
+  name: "lahaja"
+  language: "hi"               # ISO 639-1 code. Used by Whisper for WER.
+  source: "huggingface"
+  hf_repo: "tiny-aya-translate/lahaja-eval"
+  hf_split: "test"            # Only split available in this dataset.
+
+  # HF column names -- these map to the standard schema used by
+  # prepare_data.py and the eval manifest format.
+  audio_column: "audio_filepath"   # HF Audio feature column.
+  text_column: "text"              # Hindi transcription text.
+  speaker_column: "sp_id"         # Unique speaker identifier string.
+  duration_column: "duration"      # Duration in seconds (float64).
+
+  num_examples: 3076           # Total before filtering.
+  estimated_hours: 6.2
+
+  target_sr: 24000             # Codec input sample rate (Mimi = 24 kHz).
+  original_sr: null            # Auto-detected from HF Audio metadata.
+  mono: true                   # Down-mix to mono if multi-channel.
+
+  # Eval-only dataset: all data goes to test, no train/val splits.
+  splits:
+    method: "random"
+    train_ratio: 0.0           # No training data.
+    val_ratio: 0.0             # No validation data.
+    test_ratio: 1.0            # Everything is test.
+    min_speaker_utterances: 1
+
+  filters:
+    min_duration_s: 0.5        # Skip very short utterances.
+    max_duration_s: 30.0       # Truncate very long utterances.
+    max_clip_ratio: 0.05       # Skip heavily clipped audio.
+
+  local_dir: "data/lahaja"    # Where prep script writes WAV + manifest.

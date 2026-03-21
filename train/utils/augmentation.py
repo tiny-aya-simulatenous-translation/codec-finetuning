@@ -5,6 +5,25 @@ fine-tuning on low-resource speech data.  Three built-in presets
 (``"none"``, ``"light"``, ``"heavy"``) cover common training scenarios;
 ``"custom"`` lets callers override every knob.
 
+Augmentation order
+------------------
+Augmentations are applied in a fixed, deterministic order so that their
+interactions remain predictable:
+
+1. **Speed perturbation** — resample to a perturbed rate and back,
+   stretching or compressing the signal in time.
+2. **Pitch shift** — resample using a semitone-derived ratio to shift
+   pitch without changing duration.
+3. **Additive Gaussian noise** — simulates recording noise at a random
+   SNR within the configured range.
+4. **Gain jitter** — random volume change to make the model invariant
+   to recording levels.
+5. **Chunk reversal** — reverses a random 10-30 % contiguous chunk as a
+   mild temporal perturbation.
+
+After all augmentations, the waveform is padded or trimmed to its
+original length to maintain a fixed tensor size.
+
 Usage::
 
     from train.utils.augmentation import AugmentationConfig, augment_waveform

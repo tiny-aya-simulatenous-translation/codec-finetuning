@@ -4,10 +4,25 @@ Aggregates metrics from bootstrap evaluation, TTFAT, and SSNR JSON files
 and logs them as WandB summary metrics, a per-utterance table, and audio
 samples.
 
+Pipeline position
+-----------------
+This module is **Stage 6** of the unified evaluation pipeline
+(:mod:`eval.run_all`).  It runs after all metric-computation stages have
+written their JSON files to the ``results/`` directory.
+
+What gets logged
+----------------
+- **Summary scalars** -- mean, std, and 95 % CI for every bootstrap metric,
+  plus TTFAT latency percentiles and SSNR statistics.
+- **Per-utterance table** -- one row per test utterance with duration and
+  placeholder columns for per-utterance metric values.
+- **Audio samples** -- up to 5 randomly selected original/reconstructed WAV
+  pairs for qualitative listening tests inside the WandB dashboard.
+
 Usage::
 
-    uv run python eval/log_to_wandb.py \
-        --experiment mimi_turkish_sample \
+    uv run python eval/log_to_wandb.py \\
+        --experiment mimi_turkish_sample \\
         [--run-id <wandb_run_id>]
 
 License: MIT

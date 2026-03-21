@@ -1,10 +1,35 @@
-"""Vendored Muon optimizer — Newton-Schulz orthogonalized SGD momentum.
+"""Vendored Muon optimizer — Newton-Schulz orthogonalised SGD momentum.
 
 This module provides a self-contained implementation of the Muon optimizer,
-based on Keller Jordan's reference code. Muon replaces each SGD-momentum
+based on Keller Jordan's reference code.  Muon replaces each SGD-momentum
 update with the nearest semi-orthogonal matrix via Newton-Schulz iteration,
 amplifying under-represented gradient directions while suppressing dominant
 ones.
+
+Algorithm
+---------
+At each step:
+
+1. Accumulate the standard SGD momentum buffer:
+   ``buf = momentum * buf + grad``.
+2. Optionally apply Nesterov lookahead:
+   ``update = grad + momentum * buf``.
+3. Flatten ≥3-D parameter tensors (e.g. ``Conv2d``) to 2-D.
+4. Run :func:`newtonschulz5` on the update to orthogonalise it
+   (project onto the nearest semi-orthogonal matrix).
+5. Apply the orthogonalised update: ``param -= lr * update``.
+
+The orthogonalisation step amplifies gradient directions that are
+underrepresented in the current update and dampens dominant ones,
+acting as an implicit preconditioner.
+
+Parameter routing
+-----------------
+Muon is designed for **2-D hidden-layer weight matrices** where its
+orthogonalised update provides the most benefit.  Embeddings, layer
+norms, biases, and 1-D parameters should be routed to a standard
+optimizer (e.g. AdamW) via the hybrid setup in
+:mod:`train.optimizer_factory`.
 
 Usage::
 
@@ -72,15 +97,16 @@ def newtonschulz5(G: Tensor, steps: int = 5, eps: float = 1e-7) -> Tensor:
     X = X / (X.norm() + eps)
 
     if G.size(0) > G.size(1):
-        # Tall matrix: iterate on X^T X (cheaper).
+        # Tall matrix (rows > cols): iterate on the smaller X^T X product
+        # (shape cols×cols) to reduce FLOPs.
         for _ in range(steps):
-            A = X.T @ X
-            B = b * A + c * A @ A  # quintic polynomial inner term
-            X = a * X + X @ B
+            A = X.T @ X                   # Gram matrix (cols × cols)
+            B = b * A + c * A @ A         # Quintic polynomial inner term
+            X = a * X + X @ B             # One Newton-Schulz iteration
     else:
-        # Wide or square matrix: iterate on X X^T.
+        # Wide or square matrix: iterate on X X^T (rows × rows).
         for _ in range(steps):
-            A = X @ X.T
+            A = X @ X.T                   # Gram matrix (rows × rows)
             B = b * A + c * A @ A
             X = a * X + B @ X
 
