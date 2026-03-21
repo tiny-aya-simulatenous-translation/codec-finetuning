@@ -39,3 +39,10 @@ Thumbs.db
 
 # HuggingFace cache
 .cache/
+
+# Evaluation results (experiment artifacts)
+results/
+
+# Evaluation logs
+eval-mimi.log
+*.log

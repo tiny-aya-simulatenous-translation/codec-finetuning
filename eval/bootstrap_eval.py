@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
-import soundfile as sf
+import torchaudio
 
 from train.config_loader import load_config
 
@@ -116,6 +116,9 @@ def _compute_dnsmos(
 ) -> Dict[str, float]:
     """Compute DNSMOS scores using the speechmos library.
 
+    DNSMOS requires 16 kHz input. Audio at other sample rates is
+    resampled automatically before scoring.
+
     Args:
         deg: Degraded (reconstructed) audio as a 1-D numpy array.
         sample_rate: Audio sample rate in Hz.
@@ -125,7 +128,20 @@ def _compute_dnsmos(
     """
     from speechmos import dnsmos
 
-    scores = dnsmos.run(deg, sr=sample_rate)
+    if sample_rate != 16000:
+        import torchaudio.functional as F_audio
+        import torch
+
+        deg_16k = F_audio.resample(
+            torch.from_numpy(deg).float(), sample_rate, 16000
+        ).numpy()
+        sample_rate = 16000
+    else:
+        deg_16k = deg
+
+    deg_16k = np.clip(deg_16k, -1.0, 1.0)
+
+    scores = dnsmos.run(deg_16k, sr=sample_rate)
     return {
         "dnsmos_sig": float(scores["sig_mos"]),
         "dnsmos_bak": float(scores["bak_mos"]),
@@ -195,14 +211,17 @@ def compute_utterance_metrics(
     Returns:
         Dict mapping metric names to their float values.
     """
-    ref, sr_ref = sf.read(ref_path)
-    deg, sr_deg = sf.read(deg_path)
+    ref_wav, sr_ref = torchaudio.load(ref_path)
+    deg_wav, sr_deg = torchaudio.load(deg_path)
 
     # Ensure mono.
-    if ref.ndim > 1:
-        ref = ref.mean(axis=1)
-    if deg.ndim > 1:
-        deg = deg.mean(axis=1)
+    if ref_wav.shape[0] > 1:
+        ref_wav = ref_wav.mean(dim=0, keepdim=True)
+    if deg_wav.shape[0] > 1:
+        deg_wav = deg_wav.mean(dim=0, keepdim=True)
+
+    ref = ref_wav.squeeze(0).numpy()
+    deg = deg_wav.squeeze(0).numpy()
 
     # Align lengths.
     min_len = min(len(ref), len(deg))

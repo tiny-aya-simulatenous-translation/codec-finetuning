@@ -19,7 +19,7 @@ codec:
   params_millions: 200         # Approximate, includes w2v-bert-2.0 encoder.
 
   training:
-    micro_batch_size: 32       # Lower than Mimi due to w2v-bert-2.0 memory.
+    micro_batch_size: 12       # Lower than Mimi due to w2v-bert-2.0 memory.
     segment_s: 5.0             # Shorter default for DualCodec.
     freeze_encoder_steps: 0
     unfreeze_layers: "all"

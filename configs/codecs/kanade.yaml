@@ -20,7 +20,7 @@ codec:
   params_millions: 142         # Including HiFT vocoder.
 
   training:
-    micro_batch_size: 64       # Kanade is lighter weight than Mimi/DualCodec.
+    micro_batch_size: 24       # Kanade is lighter weight than Mimi/DualCodec.
     segment_s: 5.0
     freeze_encoder_steps: 0
     unfreeze_layers: "all"

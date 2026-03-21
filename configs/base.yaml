@@ -40,7 +40,7 @@ training:
   save_every: 1000             # Checkpoint every N steps.
   log_every: 50                # WandB log every N steps.
   audio_log_every: 500         # Log reconstructed audio samples to WandB.
-  grad_accum_steps: 4          # Effective batch = micro_batch * grad_accum.
+  grad_accum_steps: 8          # Effective batch = micro_batch * grad_accum.
   max_grad_norm: 1.0           # Gradient clipping norm. Range: [0.1, 10.0].
   seed: 42                     # Random seed for reproducibility.
   precision: "bf16"            # Options: "bf16", "fp32". Always bf16 on H100.

@@ -1,0 +1,22 @@
+# VERSA score configuration for codec evaluation.
+# These metrics are available without extra model downloads.
+- name: mcd_f0
+  f0min: 50
+  f0max: 600
+  mcep_shift: 5
+  mcep_fftl: 1024
+  mcep_dim: 39
+  mcep_alpha: 0.466
+  dtw: false
+
+- name: signal_metric
+
+- name: pesq
+
+- name: stoi
+
+- name: estoi
+
+- name: squim_no_ref
+
+- name: se_snr

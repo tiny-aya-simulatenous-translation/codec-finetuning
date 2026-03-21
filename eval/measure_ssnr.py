@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
-import soundfile as sf
+import torchaudio
 
 from train.config_loader import load_config
 
@@ -155,13 +155,16 @@ def run(
 
     ssnr_values: List[float] = []
     for entry in manifest:
-        ref, _ = sf.read(entry["original_path"])
-        deg, _ = sf.read(entry["reconstructed_path"])
+        ref_wav, _ = torchaudio.load(entry["original_path"])
+        deg_wav, _ = torchaudio.load(entry["reconstructed_path"])
 
-        if ref.ndim > 1:
-            ref = ref.mean(axis=1)
-        if deg.ndim > 1:
-            deg = deg.mean(axis=1)
+        if ref_wav.shape[0] > 1:
+            ref_wav = ref_wav.mean(dim=0, keepdim=True)
+        if deg_wav.shape[0] > 1:
+            deg_wav = deg_wav.mean(dim=0, keepdim=True)
+
+        ref = ref_wav.squeeze(0).numpy()
+        deg = deg_wav.squeeze(0).numpy()
 
         ssnr = compute_ssnr(
             ref, deg, sample_rate,

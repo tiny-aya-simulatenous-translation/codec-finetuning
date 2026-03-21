@@ -1,0 +1,138 @@
+augmentation_preset: none
+beta2: 0.95
+codec: mimi
+dataset_config: configs/datasets/turkish_sample.yaml
+disc_lr_ratio: 0.1
+disc_warmup_steps: 0
+ema_decay: 0.999
+freeze_encoder_steps: 0
+learning_rate: 0.0010737384106765688
+max_steps: 5000
+optimizer: schedulefree_adamw
+r1_penalty: 50
+scheduler: constant
+segment_s: 10
+warmup_steps: 0
+weight_decay: 0
+resolved_config:
+  optimizer:
+    name: schedulefree_adamw
+    lr: 0.0010737384106765688
+    betas:
+    - 0.9
+    - 0.95
+    weight_decay: 0.0
+  scheduler:
+    name: constant
+    warmup_steps: 0
+    min_lr_ratio: 0.01
+  training:
+    max_steps: 5000
+    eval_every: 250
+    save_every: 500
+    log_every: 50
+    audio_log_every: 500
+    grad_accum_steps: 8
+    max_grad_norm: 1.0
+    seed: 42
+    precision: bf16
+    compile: true
+    compile_mode: default
+  ema:
+    enabled: true
+    decay: 0.999
+    start_step: 1000
+  augmentation:
+    preset: none
+    speed_perturb:
+    - 0.95
+    - 1.05
+    pitch_shift: null
+    noise_snr: null
+    gain_db:
+    - -3
+    - 3
+    chunk_reverse_prob: 0.0
+  curriculum:
+    enabled: false
+    initial_segment_s: 2.0
+    final_segment_s: 10.0
+    ramp_steps: 3000
+  discriminator:
+    warmup_steps: 0
+    lr_ratio: 0.1
+    r1_penalty: 50.0
+  loss_balancer:
+    enabled: true
+    ema_decay: 0.999
+  wandb:
+    enabled: true
+    project: codec-finetuning
+    tags:
+    - mimi
+    - turkish_sample
+    - sweep
+    run_name: mimi-sweep-ooz250pm
+  early_stopping:
+    enabled: true
+    patience: 10
+    metric: val_loss
+    mode: min
+  bootstrap_eval:
+    enabled: true
+    n_resamples: 20
+    confidence: 0.95
+  output_dir: outputs/sweeps/mimi_turkish_sample/ooz250pm
+  codec:
+    name: mimi
+    pretrained: kyutai/mimi
+    sample_rate: 24000
+    frame_rate: 12.5
+    num_codebooks: 8
+    latency_ms: 80
+    params_millions: 96
+    training:
+      micro_batch_size: 16
+      segment_s: 10.0
+      freeze_encoder_steps: 0
+      unfreeze_layers: all
+    losses:
+      reconstruction: l1
+      reconstruction_weight: 1.0
+      adversarial: true
+      adversarial_weight: 0.1
+      feature_matching: true
+      feature_matching_weight: 2.0
+      wavlm_distillation: true
+      wavlm_distillation_weight: 1.0
+      commit_loss_weight: 0.25
+    flash_attention: true
+  dataset:
+    name: turkish_sample
+    language: tr
+    source: local
+    local_raw_dir: data/turkish_sample_raw
+    audio_column: null
+    text_column: null
+    speaker_column: null
+    duration_column: null
+    num_examples: 2500
+    estimated_hours: 10
+    target_sr: 24000
+    original_sr: 16000
+    mono: true
+    splits:
+      method: random
+      train_ratio: 0.8
+      val_ratio: 0.1
+      test_ratio: 0.1
+      min_speaker_utterances: 1
+    filters:
+      min_duration_s: 0.5
+      max_duration_s: 30.0
+      max_clip_ratio: 0.05
+    local_dir: data/turkish_sample
+_sweep_metadata:
+  source_run_id: ooz250pm
+  val_loss: 0.012216832626061849
+  sweep_id: j7oxgz4p

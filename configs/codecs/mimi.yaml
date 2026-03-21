@@ -20,8 +20,9 @@ codec:
   params_millions: 96
 
   training:
-    micro_batch_size: 48       # Per-GPU micro batch size for H100 80GB.
-                               # Range: [8, 64]. See memory analysis in spec.
+    micro_batch_size: 16       # Per-GPU micro batch size for H100 80GB.
+                               # Range: [4, 32]. Kept conservative due to
+                               # loss_balancer retain_graph + discriminator + EMA.
     segment_s: 10.0            # Audio segment length in seconds.
                                # Range: [2.0, 20.0]. Longer = more context per
                                # example but fewer examples per effective epoch.

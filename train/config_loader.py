@@ -200,6 +200,34 @@ def apply_sweep_overrides(
             sweep_params["warmup_steps"]
         )
 
+    # Training params
+    if "max_steps" in sweep_params:
+        cfg["training"]["max_steps"] = int(sweep_params["max_steps"])
+
+    if "segment_s" in sweep_params:
+        cfg["codec"]["training"]["segment_s"] = float(sweep_params["segment_s"])
+
+    if "augmentation_preset" in sweep_params:
+        cfg.setdefault("augmentation", {})["preset"] = sweep_params["augmentation_preset"]
+
+    # Discriminator params
+    if "disc_lr_ratio" in sweep_params:
+        cfg.setdefault("discriminator", {})["lr_ratio"] = float(sweep_params["disc_lr_ratio"])
+
+    if "r1_penalty" in sweep_params:
+        cfg.setdefault("discriminator", {})["r1_penalty"] = float(sweep_params["r1_penalty"])
+
+    if "disc_warmup_steps" in sweep_params:
+        cfg.setdefault("discriminator", {})["warmup_steps"] = int(sweep_params["disc_warmup_steps"])
+
+    # EMA
+    if "ema_decay" in sweep_params:
+        cfg.setdefault("ema", {})["decay"] = float(sweep_params["ema_decay"])
+
+    # Encoder freezing
+    if "freeze_encoder_steps" in sweep_params:
+        cfg["codec"]["training"]["freeze_encoder_steps"] = int(sweep_params["freeze_encoder_steps"])
+
     # --- Optimizer-specific adjustments ---
 
     opt_name = cfg["optimizer"]["name"].lower().strip()

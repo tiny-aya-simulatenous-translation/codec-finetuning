@@ -28,10 +28,10 @@ dataset:
   mono: true
 
   splits:
-    method: "speaker_disjoint"
-    train_ratio: 0.9
-    val_ratio: 0.05
-    test_ratio: 0.05
+    method: "random"            # Only 7 speakers with equal counts; speaker-
+    train_ratio: 0.9            # disjoint greedy assignment can't produce a
+    val_ratio: 0.05             # 3-way split. Random split preserves speaker
+    test_ratio: 0.05            # balance across all splits.
     min_speaker_utterances: 5
 
   filters:

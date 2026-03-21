@@ -4,14 +4,15 @@ Loads a fine-tuned (or pretrained) codec checkpoint, encodes each test
 utterance into discrete tokens, decodes back to audio, and saves the
 reconstructed waveforms alongside a manifest for downstream metrics.
 
-Supports all three codecs: Mimi, DualCodec, and Kanade.
+New codecs are registered via :mod:`eval.codec_registry` -- no changes
+to this file are needed.
 
 Usage::
 
-    uv run python eval/reconstruct.py \
-        --config configs/experiments/mimi_turkish_sample.yaml \
-        [--checkpoint outputs/mimi_turkish_sample/best.pt] \
-        [--split test] \
+    uv run python eval/reconstruct.py \\
+        --config configs/experiments/mimi_turkish_sample.yaml \\
+        [--checkpoint outputs/mimi_turkish_sample/best.pt] \\
+        [--split test] \\
         [--use-ema]
 
 License: MIT
@@ -27,121 +28,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import soundfile as sf
 import torch
 import torchaudio
 
+from eval.codec_registry import get_codec_hooks
 from train.config_loader import load_config
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Codec loading helpers
+# Public API -- thin wrappers around the codec registry
 # ---------------------------------------------------------------------------
-
-
-def _load_mimi(
-    config: Dict[str, Any],
-    checkpoint: Optional[str],
-    use_ema: bool,
-    device: torch.device,
-) -> torch.nn.Module:
-    """Load the Mimi codec model from pretrained or fine-tuned checkpoint.
-
-    Args:
-        config: Full experiment config dict.
-        checkpoint: Optional path to a fine-tuned checkpoint ``.pt`` file.
-        use_ema: Whether to load EMA weights from the checkpoint.
-        device: Target device (``"cuda"`` or ``"cpu"``).
-
-    Returns:
-        The Mimi model ready for inference.
-    """
-    from transformers import MimiModel
-
-    model = MimiModel.from_pretrained(config["codec"]["pretrained"])
-
-    if checkpoint is not None:
-        ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
-        if use_ema and "ema_state_dict" in ckpt:
-            logger.info("Loading EMA weights from checkpoint.")
-            model.load_state_dict(ckpt["ema_state_dict"])
-        elif "model_state_dict" in ckpt:
-            logger.info("Loading model weights from checkpoint.")
-            model.load_state_dict(ckpt["model_state_dict"])
-
-    model = model.to(device)
-    model.eval()
-    return model
-
-
-def _load_dualcodec(
-    config: Dict[str, Any],
-    checkpoint: Optional[str],
-    use_ema: bool,
-    device: torch.device,
-) -> Any:
-    """Load the DualCodec model.
-
-    Args:
-        config: Full experiment config dict.
-        checkpoint: Optional path to a fine-tuned checkpoint.
-        use_ema: Whether to load EMA weights from the checkpoint.
-        device: Target device.
-
-    Returns:
-        The DualCodec model ready for inference.
-    """
-    import dualcodec
-
-    model = dualcodec.load_model(config["codec"]["pretrained"])
-
-    if checkpoint is not None:
-        ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
-        has_ema = use_ema and "ema_state_dict" in ckpt
-        state_key = "ema_state_dict" if has_ema else "model_state_dict"
-        if state_key in ckpt:
-            logger.info("Loading %s from checkpoint.", state_key)
-            model.load_state_dict(ckpt[state_key])
-
-    model = model.to(device)
-    model.eval()
-    return model
-
-
-def _load_kanade(
-    config: Dict[str, Any],
-    checkpoint: Optional[str],
-    use_ema: bool,
-    device: torch.device,
-) -> Any:
-    """Load the Kanade tokenizer model.
-
-    Args:
-        config: Full experiment config dict.
-        checkpoint: Optional path to a fine-tuned checkpoint.
-        use_ema: Whether to load EMA weights from the checkpoint.
-        device: Target device.
-
-    Returns:
-        The Kanade model ready for inference.
-    """
-    import kanade_tokenizer
-
-    model = kanade_tokenizer.load_model(config["codec"]["pretrained"])
-
-    if checkpoint is not None:
-        ckpt = torch.load(checkpoint, map_location=device, weights_only=False)
-        has_ema = use_ema and "ema_state_dict" in ckpt
-        state_key = "ema_state_dict" if has_ema else "model_state_dict"
-        if state_key in ckpt:
-            logger.info("Loading %s from checkpoint.", state_key)
-            model.load_state_dict(ckpt[state_key])
-
-    model = model.to(device)
-    model.eval()
-    return model
 
 
 def load_model(
@@ -151,6 +49,8 @@ def load_model(
     device: Optional[torch.device] = None,
 ) -> Any:
     """Load the appropriate codec model based on config.
+
+    Delegates to the codec's registered ``load`` hook.
 
     Args:
         config: Full experiment config dict.
@@ -162,85 +62,14 @@ def load_model(
         The loaded codec model.
 
     Raises:
-        ValueError: If the codec name in config is not supported.
+        ValueError: If the codec name in config is not registered.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     codec_name = config["codec"]["name"].lower()
-    loaders = {
-        "mimi": _load_mimi,
-        "dualcodec": _load_dualcodec,
-        "kanade": _load_kanade,
-    }
-
-    if codec_name not in loaders:
-        raise ValueError(
-            f"Unsupported codec '{codec_name}'. "
-            f"Supported: {', '.join(loaders)}"
-        )
-
-    return loaders[codec_name](config, checkpoint, use_ema, device)
-
-
-# ---------------------------------------------------------------------------
-# Encode / decode dispatch
-# ---------------------------------------------------------------------------
-
-
-def _encode_decode_mimi(
-    model: torch.nn.Module,
-    waveform: torch.Tensor,
-) -> torch.Tensor:
-    """Encode and decode a waveform using the Mimi codec.
-
-    Args:
-        model: The loaded Mimi model.
-        waveform: Input audio tensor of shape ``(1, 1, samples)``.
-
-    Returns:
-        Reconstructed audio tensor of shape ``(1, 1, samples)``.
-    """
-    tokens = model.encode(waveform)
-    audio_codes = tokens.audio_codes
-    reconstructed = model.decode(audio_codes)
-    return reconstructed.audio_values
-
-
-def _encode_decode_dualcodec(
-    model: Any,
-    waveform: torch.Tensor,
-) -> torch.Tensor:
-    """Encode and decode a waveform using DualCodec.
-
-    Args:
-        model: The loaded DualCodec model.
-        waveform: Input audio tensor of shape ``(1, 1, samples)``.
-
-    Returns:
-        Reconstructed audio tensor of shape ``(1, 1, samples)``.
-    """
-    tokens = model.encode(waveform)
-    reconstructed = model.decode(tokens)
-    return reconstructed
-
-
-def _encode_decode_kanade(
-    model: Any,
-    waveform: torch.Tensor,
-) -> torch.Tensor:
-    """Encode and decode a waveform using Kanade tokenizer.
-
-    Args:
-        model: The loaded Kanade model.
-        waveform: Input audio tensor of shape ``(1, 1, samples)``.
-
-    Returns:
-        Reconstructed audio tensor of shape ``(1, 1, samples)``.
-    """
-    tokens = model.encode(waveform)
-    reconstructed = model.decode(tokens)
-    return reconstructed
+    hooks = get_codec_hooks(codec_name)
+    return hooks.load(config, checkpoint, use_ema, device)
 
 
 def encode_decode(
@@ -250,25 +79,21 @@ def encode_decode(
 ) -> torch.Tensor:
     """Dispatch encode-decode to the correct codec implementation.
 
+    Delegates to the codec's registered ``encode_decode`` hook.
+
     Args:
         model: The loaded codec model.
         waveform: Input audio tensor of shape ``(1, 1, samples)``.
-        codec_name: One of ``"mimi"``, ``"dualcodec"``, ``"kanade"``.
+        codec_name: Codec identifier (case-insensitive).
 
     Returns:
         Reconstructed audio tensor.
 
     Raises:
-        ValueError: If *codec_name* is not recognised.
+        ValueError: If *codec_name* is not registered.
     """
-    dispatch = {
-        "mimi": _encode_decode_mimi,
-        "dualcodec": _encode_decode_dualcodec,
-        "kanade": _encode_decode_kanade,
-    }
-    if codec_name not in dispatch:
-        raise ValueError(f"Unknown codec: {codec_name}")
-    return dispatch[codec_name](model, waveform)
+    hooks = get_codec_hooks(codec_name)
+    return hooks.encode_decode(model, waveform)
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +190,10 @@ def reconstruct(
         utt_id = entry.get("id", Path(entry["audio_path"]).stem)
         audio_path = entry["audio_path"]
 
+        # Resolve relative paths against the dataset root directory.
+        if not Path(audio_path).is_absolute():
+            audio_path = str(data_dir / audio_path)
+
         # Load audio.
         waveform, sr = torchaudio.load(audio_path)
         if sr != sample_rate:
@@ -382,7 +211,7 @@ def reconstruct(
         ):
             reconstructed = encode_decode(model, waveform_input, codec_name)
 
-        reconstructed = reconstructed.squeeze(0).cpu()
+        reconstructed = reconstructed.squeeze(0).float().cpu()
 
         # Latency alignment.
         waveform, reconstructed = _align_latency(
@@ -391,7 +220,7 @@ def reconstruct(
 
         # Save reconstructed audio.
         out_path = output_dir / f"{utt_id}.wav"
-        sf.write(str(out_path), reconstructed.squeeze(0).numpy(), sample_rate)
+        torchaudio.save(str(out_path), reconstructed, sample_rate)
 
         results.append({
             "id": utt_id,

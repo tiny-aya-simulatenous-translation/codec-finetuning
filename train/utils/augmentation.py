@@ -20,10 +20,9 @@ License: MIT
 
 from __future__ import annotations
 
-import math
 import random
-from dataclasses import dataclass, field
-from typing import Tuple
+from dataclasses import dataclass
+from typing import Protocol, Tuple
 
 import torch
 import torchaudio.functional as AF
@@ -33,6 +32,20 @@ from torch import Tensor
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+
+class _RandomLike(Protocol):
+    """Subset of RNG methods used by the augmentation pipeline."""
+
+    def randint(self, a: int, b: int) -> int:
+        """Return a random integer N such that ``a <= N <= b``."""
+
+    def random(self) -> float:
+        """Return the next random floating-point number in ``[0.0, 1.0)``."""
+
+    def uniform(self, a: float, b: float) -> float:
+        """Return a random floating-point number N such that ``a <= N <= b``."""
+
 
 @dataclass
 class AugmentationConfig:
@@ -121,7 +134,7 @@ def augment_waveform(
     waveform: Tensor,
     sr: int,
     config: AugmentationConfig,
-    rng: random.Random | None = None,
+    rng: _RandomLike | None = None,
 ) -> Tensor:
     """Apply a chain of waveform augmentations.
 
@@ -149,7 +162,7 @@ def augment_waveform(
         torch.Size([1, 24000])
     """
     if rng is None:
-        rng = random.Random()
+        rng = random
 
     config = resolve_preset(config)
     orig_len = waveform.shape[-1]

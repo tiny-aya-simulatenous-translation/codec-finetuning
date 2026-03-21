@@ -39,18 +39,69 @@ train = [
     "adan-pytorch>=0.1.0",
 ]
 eval = [
-    "pesq==0.0.4",
+    "pesq>=0.0.4",
     "pystoi>=0.4.0",
     "speechmos>=0.0.1",
     "jiwer>=3.0.0",
     "openai-whisper",
+    "setuptools<81",
+    "flash-attn>=2.5.0",
+    "versa-speech-audio-toolkit",
+    "pysepm",
+    "SRMRpy",
+    "fadtk-versa",
+    "msclap",
+    "wvmos",
+    "fairseq",
+    "tensorboardX>=2.6",
+    "scoreq-versa",
+    "nomad-versa",
+    "emo2vec-versa",
+    "utmosv2",
+    "torchcodec==0.9.0",
 ]
+# NOTE: visqol requires a C++ bazel build and cannot be declared as a
+# regular dependency. Install manually:
+#   git clone https://github.com/google/visqol.git && cd visqol
+#   echo 'build --linkopt=-lstdc++fs' >> .bazelrc && echo '5.1.0' > .bazelversion
+#   PYTHON_BIN_PATH=.venv/bin/python bazel build -c opt //python:visqol_lib_py.so
+#   pip install .
+#
+# Noresqa models must be fetched after install:
+#   wget -P $(python -c "import versa,os;print(os.path.dirname(versa.__file__))")/../../tools/Noresqa/models \
+#     https://github.com/facebookresearch/Noresqa/raw/main/models/model_noresqa_mos.pth \
+#     https://github.com/facebookresearch/Noresqa/raw/main/models/model_noresqa.pth
+#
+# UTMOSv2 LFS weights: cd <utmosv2-clone> && git lfs pull && ln -s $(pwd) ~/.cache/utmosv2
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
 torchaudio = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
 kanade-tokenizer = { git = "https://github.com/frothywater/kanade-tokenizer" }
+versa-speech-audio-toolkit = { git = "https://github.com/shinjiwlab/versa.git" }
+pysepm = { git = "https://github.com/ftshijt/pysepm.git" }
+SRMRpy = { git = "https://github.com/shimhz/SRMRpy.git" }
+fadtk-versa = { git = "https://github.com/ftshijt/fadtk.git" }
+msclap = { git = "https://github.com/ftshijt/CLAP.git" }
+wvmos = { git = "https://github.com/AndreevP/wvmos.git" }
+fairseq = { git = "https://github.com/ftshijt/fairseq.git", branch = "versa" }
+scoreq-versa = { git = "https://github.com/ftshijt/scoreq.git" }
+nomad-versa = { git = "https://github.com/shimhz/nomad.git" }
+emo2vec-versa = { git = "https://github.com/ftshijt/emotion2vec.git" }
+utmosv2 = { git = "https://github.com/ftshijt/UTMOSv2.git" }
+torchcodec = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
+
+[tool.uv]
+# Override transitive deps that have conflicting URLs or version constraints.
+# - pysepm pins SRMRpy/pesq to zip URLs; we use our git sources instead.
+# - descript-audiotools needs protobuf<3.20, versa needs >=4.21; force modern.
+override-dependencies = [
+    "SRMRpy @ git+https://github.com/shimhz/SRMRpy.git",
+    "pesq @ git+https://github.com/ludlows/python-pesq.git",
+    "msclap @ git+https://github.com/ftshijt/CLAP.git",
+    "protobuf>=4.21.1",
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu126"

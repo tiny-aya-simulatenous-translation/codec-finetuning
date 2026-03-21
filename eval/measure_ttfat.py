@@ -79,7 +79,10 @@ def measure_ttfat(
     def _load_random_frame() -> torch.Tensor:
         """Load a random utterance and extract one codec frame."""
         entry = random.choice(manifest)
-        waveform, sr = torchaudio.load(entry["audio_path"])
+        audio_path = entry["audio_path"]
+        if not Path(audio_path).is_absolute():
+            audio_path = str(data_dir / audio_path)
+        waveform, sr = torchaudio.load(audio_path)
         if sr != sample_rate:
             waveform = torchaudio.functional.resample(
                 waveform, sr, sample_rate

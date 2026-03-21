@@ -416,12 +416,19 @@ class MuonHybridOptimizer(Optimizer):
         if adamw_opt is not None:
             param_groups.extend(adamw_opt.param_groups)
 
-        # Initialise base Optimizer preserving lr from inner optimizers
-        # so that LR schedulers (LambdaLR, etc.) can read initial_lr.
+        if not param_groups:
+            raise ValueError(
+                "MuonHybridOptimizer requires at least one inner optimizer."
+            )
+
+        # Initialise the Optimizer base class, then swap in the *actual*
+        # inner param_groups so LR schedulers and manual LR edits operate on
+        # the same dictionaries consumed by the wrapped optimizers.
         super().__init__(
-            [{"params": pg["params"], "lr": pg.get("lr", 1e-4)} for pg in param_groups],
+            [{k: v for k, v in pg.items()} for pg in param_groups],
             defaults={"lr": 1e-4},
         )
+        self.param_groups = param_groups
 
     # -- Core interface ----------------------------------------------------
 
@@ -481,3 +488,10 @@ class MuonHybridOptimizer(Optimizer):
             self._muon_opt.load_state_dict(state_dict["muon"])
         if self._adamw_opt is not None and state_dict.get("adamw"):
             self._adamw_opt.load_state_dict(state_dict["adamw"])
+
+        param_groups: List[Dict[str, Any]] = []
+        if self._muon_opt is not None:
+            param_groups.extend(self._muon_opt.param_groups)
+        if self._adamw_opt is not None:
+            param_groups.extend(self._adamw_opt.param_groups)
+        self.param_groups = param_groups

@@ -23,10 +23,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import random
 import signal
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -35,9 +35,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import (
-    CosineAnnealingLR,
     LambdaLR,
     LRScheduler,
+    SequentialLR,
 )
 from torch.utils.data import DataLoader, Dataset
 
@@ -80,6 +80,22 @@ def _set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def _seed_dataloader_worker(worker_id: int) -> None:
+    """Seed NumPy and Python RNGs for each DataLoader worker.
+
+    PyTorch seeds each worker's internal RNG, but libraries like NumPy and
+    Python's ``random`` need to be reseeded explicitly for reproducible data
+    loading and cropping.
+
+    Args:
+        worker_id: Unused worker index supplied by :class:`DataLoader`.
+    """
+    del worker_id
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 # ---------------------------------------------------------------------------
@@ -127,21 +143,18 @@ class _AudioManifestDataset(Dataset):
             A dict with key ``"audio"`` containing a tensor of shape
             ``(1, segment_samples)``.
         """
-        import soundfile as sf
+        import torchaudio
 
         entry = self.entries[idx]
         audio_path = self.base_dir / entry["audio_path"]
-        audio_np, sr = sf.read(str(audio_path), dtype="float32")
+        waveform, sr = torchaudio.load(str(audio_path))
 
         # Force mono.
-        if audio_np.ndim > 1:
-            audio_np = audio_np.mean(axis=1)
-        waveform = torch.from_numpy(audio_np).unsqueeze(0)  # (1, samples)
+        if waveform.shape[0] > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
 
         # Resample if needed.
         if sr != self.sample_rate:
-            import torchaudio
-
             waveform = torchaudio.functional.resample(
                 waveform, sr, self.sample_rate
             )
@@ -181,6 +194,7 @@ def _load_dataset(
     segment_s: float = config["codec"]["training"]["segment_s"]
     segment_samples = int(sr * segment_s)
     batch_size: int = config["codec"]["training"]["micro_batch_size"]
+    seed: int = int(config["training"]["seed"])
 
     train_manifest = local_dir / "train" / "manifest.json"
     val_manifest = local_dir / "val" / "manifest.json"
@@ -201,11 +215,18 @@ def _load_dataset(
         str(val_manifest), str(local_dir), segment_samples, sr
     )
 
+    train_generator = torch.Generator()
+    train_generator.manual_seed(seed)
+    val_generator = torch.Generator()
+    val_generator.manual_seed(seed + 1)
+
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
+        generator=train_generator,
         num_workers=4,
+        worker_init_fn=_seed_dataloader_worker,
         pin_memory=True,
         drop_last=True,
     )
@@ -213,7 +234,9 @@ def _load_dataset(
         val_ds,
         batch_size=batch_size,
         shuffle=False,
+        generator=val_generator,
         num_workers=4,
+        worker_init_fn=_seed_dataloader_worker,
         pin_memory=True,
         drop_last=False,
     )
@@ -252,21 +275,27 @@ def _create_scheduler(
 
     sched_cfg = config.get("scheduler", {})
     name: str = sched_cfg.get("name", "cosine")
-    warmup_steps: int = int(sched_cfg.get("warmup_steps", 500))
+    warmup_steps: int = max(
+        0,
+        min(int(sched_cfg.get("warmup_steps", 500)), int(config["training"]["max_steps"])),
+    )
     max_steps: int = int(config["training"]["max_steps"])
     min_lr_ratio: float = float(sched_cfg.get("min_lr_ratio", 0.01))
 
     if name == "cosine":
-        scheduler = CosineAnnealingLR(
-            optimizer,
-            T_max=max(max_steps - warmup_steps, 1),
-            eta_min=optimizer.param_groups[0]["lr"] * min_lr_ratio,
-        )
+        decay_steps = max(max_steps - warmup_steps, 1)
+
+        def _cosine_decay(step: int) -> float:
+            progress = min(step / decay_steps, 1.0)
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
+        scheduler = LambdaLR(optimizer, lr_lambda=_cosine_decay)
     elif name == "linear":
 
         def _linear_decay(step: int) -> float:
             if step < warmup_steps:
-                return step / max(warmup_steps, 1)
+                return (step + 1) / max(warmup_steps, 1)
             progress = (step - warmup_steps) / max(
                 max_steps - warmup_steps, 1
             )
@@ -277,7 +306,7 @@ def _create_scheduler(
 
         def _constant_with_warmup(step: int) -> float:
             if step < warmup_steps:
-                return step / max(warmup_steps, 1)
+                return (step + 1) / max(warmup_steps, 1)
             return 1.0
 
         scheduler = LambdaLR(optimizer, lr_lambda=_constant_with_warmup)
@@ -287,15 +316,21 @@ def _create_scheduler(
             "Supported: 'cosine', 'linear', 'constant'."
         )
 
-    # Wrap with warmup for cosine (Lambda variants handle it inline).
     if name == "cosine" and warmup_steps > 0:
 
-        def _warmup_then_cosine(step: int) -> float:
+        def _linear_warmup(step: int) -> float:
             if step < warmup_steps:
-                return step / max(warmup_steps, 1)
-            return 1.0  # CosineAnnealingLR handles the decay.
+                return (step + 1) / warmup_steps
+            return 1.0
 
-        scheduler = LambdaLR(optimizer, lr_lambda=_warmup_then_cosine)
+        scheduler = SequentialLR(
+            optimizer,
+            schedulers=[
+                LambdaLR(optimizer, lr_lambda=_linear_warmup),
+                scheduler,
+            ],
+            milestones=[warmup_steps],
+        )
 
     return scheduler
 
@@ -377,6 +412,7 @@ def validate(
 def save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
+    scheduler: Optional[LRScheduler],
     ema: Optional[EMAModel],
     step: int,
     config: Dict[str, Any],
@@ -392,6 +428,7 @@ def save_checkpoint(
     Args:
         model: The Mimi codec model.
         optimizer: Generator optimizer.
+        scheduler: Generator LR scheduler, or ``None``.
         ema: EMA model tracker, or ``None``.
         step: Current training step.
         config: Full experiment config dict.
@@ -408,6 +445,8 @@ def save_checkpoint(
         "optimizer_state_dict": optimizer.state_dict(),
         "config": config,
     }
+    if scheduler is not None:
+        payload["scheduler_state_dict"] = scheduler.state_dict()
     if ema is not None:
         payload["ema_state_dict"] = ema.state_dict()
     if disc is not None:
@@ -638,6 +677,8 @@ def train(config: Dict[str, Any]) -> None:
         model.load_state_dict(ckpt["model_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         start_step = ckpt.get("step", 0)
+        if scheduler is not None and "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
         if ema is not None and "ema_state_dict" in ckpt:
             ema.load_state_dict(ckpt["ema_state_dict"])
         if "disc_state_dict" in ckpt:
@@ -666,6 +707,8 @@ def train(config: Dict[str, Any]) -> None:
     consecutive_nans = 0
     last_ckpt_path = resume_path
     model.train()
+    if metadata.get("needs_eval_mode"):
+        optimizer.train()
     optimizer.zero_grad()
 
     try:
@@ -673,7 +716,7 @@ def train(config: Dict[str, Any]) -> None:
             if _shutdown_requested:
                 logger.info("Shutdown requested — saving and exiting.")
                 save_checkpoint(
-                    model, optimizer, ema, step, config,
+                    model, optimizer, scheduler, ema, step, config,
                     disc=discriminator, disc_optimizer=disc_optimizer,
                 )
                 break
@@ -829,6 +872,7 @@ def train(config: Dict[str, Any]) -> None:
                     optimizer.eval()
 
                 val_loss = validate(model, val_loader, config)
+                torch.cuda.empty_cache()
                 logger.info(
                     "step=%d  val_loss=%.4f", step, val_loss
                 )
@@ -848,7 +892,7 @@ def train(config: Dict[str, Any]) -> None:
                         "Early stopping at step %d", step
                     )
                     save_checkpoint(
-                        model, optimizer, ema, step, config,
+                        model, optimizer, scheduler, ema, step, config,
                         disc=discriminator,
                         disc_optimizer=disc_optimizer,
                     )
@@ -857,7 +901,7 @@ def train(config: Dict[str, Any]) -> None:
             # ── Checkpoint ───────────────────────────────────────────
             if step % save_every == 0:
                 save_checkpoint(
-                    model, optimizer, ema, step, config,
+                    model, optimizer, scheduler, ema, step, config,
                     disc=discriminator,
                     disc_optimizer=disc_optimizer,
                 )
@@ -874,14 +918,14 @@ def train(config: Dict[str, Any]) -> None:
             )
             torch.cuda.empty_cache()
             save_checkpoint(
-                model, optimizer, ema, step, config,
+                model, optimizer, scheduler, ema, step, config,
                 disc=discriminator, disc_optimizer=disc_optimizer,
             )
             raise
         else:
             logger.error("RuntimeError at step %d: %s", step, exc)
             save_checkpoint(
-                model, optimizer, ema, step, config,
+                model, optimizer, scheduler, ema, step, config,
                 disc=discriminator, disc_optimizer=disc_optimizer,
             )
             raise
@@ -891,7 +935,7 @@ def train(config: Dict[str, Any]) -> None:
         )
         try:
             save_checkpoint(
-                model, optimizer, ema, step, config,
+                model, optimizer, scheduler, ema, step, config,
                 disc=discriminator, disc_optimizer=disc_optimizer,
             )
         except Exception:

@@ -19,7 +19,6 @@ License: MIT
 """
 
 import argparse
-import json
 import subprocess
 import sys
 import tempfile
@@ -32,6 +31,25 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from train.config_loader import apply_sweep_overrides, load_config, validate_config
+
+
+def _write_temp_config(config: dict) -> Path:
+    """Write a resolved config to a secure temporary YAML file.
+
+    Args:
+        config: Fully resolved experiment configuration.
+
+    Returns:
+        Path to the temporary YAML file.
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".yaml",
+        delete=False,
+        encoding="utf-8",
+    ) as fh:
+        yaml.safe_dump(config, fh, default_flow_style=False, sort_keys=False)
+        return Path(fh.name)
 
 
 def main() -> None:
@@ -54,7 +72,7 @@ def main() -> None:
         nargs="?",
         help="JSON file with sweep params (provided by wandb agent)",
     )
-    args = parser.parse_args()
+    parser.parse_args()
 
     # Initialize WandB run (sweep controller provides the config)
     run = wandb.init()
@@ -115,18 +133,20 @@ def _run_dualcodec(config: dict) -> None:
     Args:
         config: Fully resolved experiment configuration dictionary.
     """
-    config_path = Path(tempfile.mktemp(suffix=".yaml"))
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path = _write_temp_config(config)
 
-    cmd = [
-        "uv",
-        "run",
-        "bash",
-        "train/train_dualcodec.sh",
-        "--config",
-        str(config_path),
-    ]
-    subprocess.run(cmd, check=True, capture_output=False)
+    try:
+        cmd = [
+            "uv",
+            "run",
+            "bash",
+            "train/train_dualcodec.sh",
+            "--config",
+            str(config_path),
+        ]
+        subprocess.run(cmd, check=True, capture_output=False)
+    finally:
+        config_path.unlink(missing_ok=True)
 
 
 def _run_kanade(config: dict) -> None:
@@ -138,18 +158,20 @@ def _run_kanade(config: dict) -> None:
     Args:
         config: Fully resolved experiment configuration dictionary.
     """
-    config_path = Path(tempfile.mktemp(suffix=".yaml"))
-    config_path.write_text(yaml.dump(config, default_flow_style=False))
+    config_path = _write_temp_config(config)
 
-    cmd = [
-        "uv",
-        "run",
-        "bash",
-        "train/train_kanade.sh",
-        "--config",
-        str(config_path),
-    ]
-    subprocess.run(cmd, check=True, capture_output=False)
+    try:
+        cmd = [
+            "uv",
+            "run",
+            "bash",
+            "train/train_kanade.sh",
+            "--config",
+            str(config_path),
+        ]
+        subprocess.run(cmd, check=True, capture_output=False)
+    finally:
+        config_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

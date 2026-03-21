@@ -81,8 +81,11 @@ On a multi-GPU node you can run more agents. As a rule of thumb:
 ### Evaluate + analyze
 
 ```bash
-# Bootstrap evaluation (PESQ, STOI, DNSMOS, MCD with 95% CIs)
-uv run python eval/bootstrap_eval.py --experiment mimi_turkish_sample
+# Unified evaluation (all stages, auto-resume, results to WandB):
+uv run python eval/run_all.py \
+    --config configs/experiments/mimi_turkish_sample.yaml \
+    --checkpoint outputs/mimi_turkish_sample/best.pt \
+    --use-ema
 
 # Extract best config from a completed sweep
 uv run python scripts/analyze_sweep.py --sweep-id <entity/project/sweep_id> \
@@ -130,10 +133,17 @@ This installs:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync --extra train --extra eval
 uv pip install flash-attn==2.8.3 --no-build-isolation
+
+# VERSA comprehensive evaluation toolkit (installed separately due to a
+# protobuf version conflict between versa's s3prl dep and dualcodec's
+# descript-audiotools dep):
+uv pip install "setuptools<81" \
+    "versa-speech-audio-toolkit @ git+https://github.com/shinjiwlab/versa.git"
 ```
 
 FlashAttention is optional. If it fails to build, training falls back to
-PyTorch SDPA automatically.
+PyTorch SDPA automatically. VERSA is required for the comprehensive evaluation
+stage in `eval/run_all.py`; if not installed, use `--skip-versa`.
 
 ---
 
@@ -356,6 +366,47 @@ The analysis script prints a ranked table of runs and a parameter importance
 summary, then writes the best hyperparameters as a ready-to-use experiment
 config.
 
+### Completed sweep: Mimi on Turkish Sample (10 h)
+
+A Bayesian hyperparameter sweep with Hyperband early termination was run on the
+10 h Turkish sample dataset to find optimal hyperparameters for Mimi fine-tuning.
+
+- **Sweep ID:** `j7oxgz4p`
+- **WandB project:** [cataluna84/codec-finetuning](https://wandb.ai/cataluna84/codec-finetuning)
+- **WandB sweep:** [https://wandb.ai/cataluna84/codec-finetuning/sweeps/j7oxgz4p](https://wandb.ai/cataluna84/codec-finetuning/sweeps/j7oxgz4p)
+- **Runs:** 68 total across 8 sweep iterations (34 in the main sweep), all 8
+  optimizers explored
+- **Duration:** Mar 16--18, 2026 (~36 h wall clock on 1x H100 80 GB)
+- **Training budget per run:** 5,000 steps
+
+**Top 10 runs by validation loss:**
+
+| Rank | Run ID | Optimizer | LR | Val Loss | Steps |
+|:----:|--------|-----------|---:|:--------:|------:|
+| 1 | `ooz250pm` | Schedule-Free AdamW | 1.074e-3 | **0.01222** | 5,000 |
+| 2 | `d0luhhdd` | Prodigy | 3.82e-4 | 0.01228 | 5,000 |
+| 3 | `3kstcode` | SOAP | 1.67e-4 | 0.01228 | 5,000 |
+| 4 | `hi2d7mi3` | Adan | 1.2e-5 | 0.01231 | 5,000 |
+| 5 | `qymvehel` | Schedule-Free AdamW | 4.8e-5 | 0.01237 | 5,000 |
+| 6 | `87see7sz` | AdamW | 1.90e-4 | 0.01243 | 5,000 |
+| 7 | `e7z122o8` | Schedule-Free AdamW | 1.5e-5 | 0.01244 | 5,000 |
+| 8 | `eu0rw91o` | Schedule-Free AdamW | 9.2e-5 | 0.01245 | 5,000 |
+| 9 | `7eejbscw` | Prodigy | 4.4e-5 | 0.01257 | 3,250 |
+| 10 | `eo8v05ci` | Prodigy | 2.92e-2 | 0.01259 | 3,250 |
+
+**Key findings:**
+
+- **Schedule-Free AdamW** won the sweep, beating the AdamW baseline (rank 6)
+  and taking 4 of the top 8 spots. This validates the NeurIPS 2024 Best Paper
+  on a codec fine-tuning task.
+- **Prodigy** (LR-free) placed 2nd with no LR tuning, confirming its value for
+  fine-tuning workflows.
+- **SOAP** (second-order) placed 3rd, supporting the hypothesis that
+  second-order information helps on small datasets.
+- All 8 optimizers completed runs; the best configuration from `ooz250pm` was
+  extracted to `configs/experiments/mimi_turkish_sample_best.yaml` and used as
+  the basis for the Phase 2 Hindi fine-tuning run.
+
 ---
 
 ## Evaluation
@@ -371,6 +422,7 @@ config.
 | SSNR | dB | higher is better | Segmental signal-to-noise ratio |
 | TTFAT | ms | lower is better | Time to first audio token (streaming latency) |
 | WER | [0, 1+] | lower is better | Word error rate via Whisper large-v3 |
+| VERSA (90+) | varies | varies | Comprehensive evaluation via [shinjiwlab/versa](https://github.com/shinjiwlab/versa) |
 
 ### Bootstrap evaluation (error bars without multi-seed training)
 
@@ -380,7 +432,57 @@ set is resampled 20 times with replacement, and each metric is computed per
 resample. The reported result is the mean with a 95% bootstrap confidence
 interval. This is controlled by the `bootstrap_eval` section in the config.
 
-### Step-by-step evaluation
+### Unified evaluation pipeline (recommended)
+
+The recommended way to evaluate is with `eval/run_all.py`, which runs every
+evaluation stage in a single command and publishes all metrics to one WandB
+run. It has **automatic resume** -- if the pipeline crashes or a stage fails,
+re-running the same command picks up from the last completed stage.
+
+```bash
+# Full evaluation with EMA checkpoint (all 6 stages):
+uv run python eval/run_all.py \
+    --config configs/experiments/mimi_hindi.yaml \
+    --checkpoint outputs/mimi_hindi/checkpoint_step_50000.pt \
+    --use-ema
+```
+
+Stages run in order:
+
+1. **Reconstruction** -- encode/decode test utterances through the codec
+2. **SSNR** -- segmental signal-to-noise ratio
+3. **TTFAT** -- time to first audio token latency
+4. **Bootstrap** -- PESQ, STOI, DNSMOS, MCD with 95% confidence intervals
+5. **VERSA** -- comprehensive 90+ metric suite
+6. **WandB publish** -- aggregate all results into a single WandB eval run
+
+Results are saved locally to `results/` (JSON + human-readable report) and
+published to WandB. A state file (`results/<experiment>_eval_state.json`)
+tracks progress so that re-runs skip completed stages automatically.
+
+```bash
+# If stage 4 fails, just re-run the same command -- stages 1-3 are cached:
+uv run python eval/run_all.py \
+    --config configs/experiments/mimi_hindi.yaml \
+    --checkpoint outputs/mimi_hindi/checkpoint_step_50000.pt \
+    --use-ema
+
+# Force a clean re-run from scratch:
+uv run python eval/run_all.py \
+    --config configs/experiments/mimi_hindi.yaml \
+    --checkpoint outputs/mimi_hindi/checkpoint_step_50000.pt \
+    --use-ema --restart
+
+# Resume logging to the original training WandB run:
+uv run python eval/run_all.py \
+    --config configs/experiments/mimi_hindi.yaml \
+    --checkpoint outputs/mimi_hindi/checkpoint_step_50000.pt \
+    --use-ema --wandb-run-id iwdd7hfg
+```
+
+### Individual evaluation scripts
+
+Each stage can also be run independently if needed:
 
 ```bash
 # 1. Reconstruct test audio using the EMA model
@@ -395,7 +497,10 @@ uv run python eval/measure_ttfat.py --config configs/experiments/mimi_turkish_sa
 # 4. Measure segmental SNR
 uv run python eval/measure_ssnr.py --experiment mimi_turkish_sample
 
-# 5. Log all results to the WandB run
+# 5. Run VERSA comprehensive evaluation
+bash eval/run_versa.sh mimi_turkish_sample
+
+# 6. Log all results to the WandB run
 uv run python eval/log_to_wandb.py --experiment mimi_turkish_sample
 ```
 
