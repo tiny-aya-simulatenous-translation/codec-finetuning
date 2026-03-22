@@ -1,0 +1,14 @@
+{
+  "mean_ms": 24.578,
+  "std_ms": 0.184,
+  "p50_ms": 24.527,
+  "p95_ms": 24.894,
+  "p99_ms": 25.133,
+  "min_ms": 24.32,
+  "max_ms": 25.292,
+  "n_runs": 50,
+  "warmup": 5,
+  "codec": "mimi",
+  "frame_samples": 1920,
+  "latency_ms": 80.0
+}

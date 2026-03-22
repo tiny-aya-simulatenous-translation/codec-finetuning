@@ -1,0 +1,54 @@
+{
+  "metrics": {
+    "dnsmos_bak": {
+      "mean": 4.1119,
+      "std": 0.0016,
+      "ci_low": 4.1091,
+      "ci_high": 4.1154
+    },
+    "dnsmos_ovrl": {
+      "mean": 3.1945,
+      "std": 0.0025,
+      "ci_low": 3.19,
+      "ci_high": 3.1986
+    },
+    "dnsmos_sig": {
+      "mean": 3.4213,
+      "std": 0.0046,
+      "ci_low": 3.4129,
+      "ci_high": 3.4296
+    },
+    "mcd": {
+      "mean": 857.5085,
+      "std": 1.8497,
+      "ci_low": 854.2968,
+      "ci_high": 860.4682
+    },
+    "pesq_nb": {
+      "mean": 3.7385,
+      "std": 0.0064,
+      "ci_low": 3.7264,
+      "ci_high": 3.7478
+    },
+    "pesq_wb": {
+      "mean": 3.2475,
+      "std": 0.0093,
+      "ci_low": 3.2304,
+      "ci_high": 3.2607
+    },
+    "stoi": {
+      "mean": 0.0789,
+      "std": 0.0007,
+      "ci_low": 0.0777,
+      "ci_high": 0.08
+    }
+  },
+  "config": {
+    "experiment": "mimi_hindi",
+    "codec": "mimi",
+    "sample_rate": 24000
+  },
+  "n_resamples": 20,
+  "confidence": 0.95,
+  "n_utterances": 1665
+}

@@ -1,0 +1,63 @@
+======================================================================
+  EVALUATION REPORT: mimi_hindi
+  Checkpoint: outputs/mimi_hindi/checkpoint_step_50000.pt
+  Date: 2026-03-21 15:19:28 UTC
+  Total time: 5.6s (0.1m)
+  Resumed from cache: reconstruction, ssnr, ttfat, bootstrap, versa
+======================================================================
+
+  SSNR (Segmental Signal-to-Noise Ratio)
+  ----------------------------------------------------------------------
+    Mean : -6.60 dB
+    Std  : 0.64 dB
+    Min  : -9.1212
+    Max  : -4.3775
+
+  TTFAT (Time to First Audio Token)
+  ----------------------------------------------------------------------
+    Mean : 14.209 ms
+    P50  : 14.155 ms
+    P95  : 14.500 ms
+    P99  : 14.900 ms
+
+  Bootstrap Metrics (PESQ, STOI, DNSMOS, MCD)
+  ----------------------------------------------------------------------
+    Metric                Mean       Std                  95% CI
+    ------------------------------------------------------------
+    PESQ (wb)           3.2475    0.0093        [3.2304, 3.2607]
+    PESQ (nb)           3.7385    0.0064        [3.7264, 3.7478]
+    STOI                0.0789    0.0007        [0.0777, 0.0800]
+    DNSMOS-SIG          3.4213    0.0046        [3.4129, 3.4296]
+    DNSMOS-BAK          4.1119    0.0016        [4.1091, 4.1154]
+    DNSMOS-OVRL         3.1945    0.0025        [3.1900, 3.1986]
+    MCD               857.5085    1.8497    [854.2968, 860.4682]
+    N utterances: 1665
+    N resamples : 20
+
+  VERSA (Comprehensive Evaluation)
+  ----------------------------------------------------------------------
+    ci_sdr                        : -23.5729
+    estoi                         : -0.0109
+    f0corr                        : 0.5065
+    f0rmse                        : 92.2658
+    mcd                           : 22.0974
+    pesq                          : 3.2407
+    sar                           : -23.6544
+    sdr                           : -23.6544
+    se_ci_sdr                     : 42.8416
+    se_sar                        : 43.3436
+    se_sdr                        : 43.3436
+    se_si_snr                     : inf
+    si_snr                        : -41.4062
+    sir                           : inf
+    stoi                          : 0.0792
+    torch_squim_pesq              : 3.4478
+    torch_squim_si_sdr            : 25.0921
+    torch_squim_stoi              : 0.9852
+    (Full results in results/mimi_hindi_versa.json)
+
+  WandB run: https://wandb.ai/cataluna84/codec-finetuning/runs/kzsoagij
+
+======================================================================
+  All results saved to: results/
+======================================================================

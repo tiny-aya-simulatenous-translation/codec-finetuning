@@ -1,0 +1,136 @@
+{
+  "experiment": "mimi_hindi",
+  "checkpoint": "outputs/mimi_hindi/checkpoint_step_50000.pt",
+  "config_path": "configs/experiments/mimi_hindi.yaml",
+  "use_ema": true,
+  "split": "test",
+  "reconstruction": {
+    "status": "ok",
+    "data": {
+      "manifest": "outputs/mimi_hindi/reconstructed/test/manifest.json"
+    }
+  },
+  "ssnr": {
+    "data": {
+      "ssnr_mean": -6.5976,
+      "ssnr_std": 0.642,
+      "ssnr_min": -9.1212,
+      "ssnr_max": -4.3775,
+      "n_utterances": 1665,
+      "segment_ms": 25.0,
+      "overlap_ms": 10.0,
+      "experiment": "mimi_hindi"
+    },
+    "status": "ok"
+  },
+  "ttfat": {
+    "data": {
+      "mean_ms": 14.209,
+      "std_ms": 0.182,
+      "p50_ms": 14.155,
+      "p95_ms": 14.5,
+      "p99_ms": 14.9,
+      "min_ms": 14.053,
+      "max_ms": 15.167,
+      "n_runs": 50,
+      "warmup": 5,
+      "codec": "mimi",
+      "frame_samples": 1920,
+      "latency_ms": 80.0
+    },
+    "status": "ok"
+  },
+  "bootstrap": {
+    "data": {
+      "metrics": {
+        "dnsmos_bak": {
+          "mean": 4.1119,
+          "std": 0.0016,
+          "ci_low": 4.1091,
+          "ci_high": 4.1154
+        },
+        "dnsmos_ovrl": {
+          "mean": 3.1945,
+          "std": 0.0025,
+          "ci_low": 3.19,
+          "ci_high": 3.1986
+        },
+        "dnsmos_sig": {
+          "mean": 3.4213,
+          "std": 0.0046,
+          "ci_low": 3.4129,
+          "ci_high": 3.4296
+        },
+        "mcd": {
+          "mean": 857.5085,
+          "std": 1.8497,
+          "ci_low": 854.2968,
+          "ci_high": 860.4682
+        },
+        "pesq_nb": {
+          "mean": 3.7385,
+          "std": 0.0064,
+          "ci_low": 3.7264,
+          "ci_high": 3.7478
+        },
+        "pesq_wb": {
+          "mean": 3.2475,
+          "std": 0.0093,
+          "ci_low": 3.2304,
+          "ci_high": 3.2607
+        },
+        "stoi": {
+          "mean": 0.0789,
+          "std": 0.0007,
+          "ci_low": 0.0777,
+          "ci_high": 0.08
+        }
+      },
+      "config": {
+        "experiment": "mimi_hindi",
+        "codec": "mimi",
+        "sample_rate": 24000
+      },
+      "n_resamples": 20,
+      "confidence": 0.95,
+      "n_utterances": 1665
+    },
+    "status": "ok"
+  },
+  "versa": {
+    "data": {
+      "mcd": 22.0974,
+      "f0rmse": 92.2658,
+      "f0corr": 0.5065,
+      "sdr": -23.6544,
+      "sir": Infinity,
+      "sar": -23.6544,
+      "si_snr": -41.4062,
+      "ci_sdr": -23.5729,
+      "pesq": 3.2407,
+      "stoi": 0.0792,
+      "estoi": -0.0109,
+      "torch_squim_stoi": 0.9852,
+      "torch_squim_pesq": 3.4478,
+      "torch_squim_si_sdr": 25.0921,
+      "se_sdr": 43.3436,
+      "se_sar": 43.3436,
+      "se_si_snr": Infinity,
+      "se_ci_sdr": 42.8416
+    },
+    "status": "ok"
+  },
+  "wandb": {
+    "url": "https://wandb.ai/cataluna84/codec-finetuning/runs/kzsoagij",
+    "status": "ok"
+  },
+  "elapsed_s": 5.6,
+  "timestamp": "2026-03-21T15:19:28.520550+00:00",
+  "resumed_stages": [
+    "reconstruction",
+    "ssnr",
+    "ttfat",
+    "bootstrap",
+    "versa"
+  ]
+}

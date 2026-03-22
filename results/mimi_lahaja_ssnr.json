@@ -1,0 +1,10 @@
+{
+  "ssnr_mean": -4.461,
+  "ssnr_std": 0.9132,
+  "ssnr_min": -8.64,
+  "ssnr_max": -0.3873,
+  "n_utterances": 3044,
+  "segment_ms": 25.0,
+  "overlap_ms": 10.0,
+  "experiment": "mimi_lahaja"
+}

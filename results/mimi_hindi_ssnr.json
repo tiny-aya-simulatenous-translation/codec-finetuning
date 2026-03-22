@@ -1,0 +1,10 @@
+{
+  "ssnr_mean": -6.5976,
+  "ssnr_std": 0.642,
+  "ssnr_min": -9.1212,
+  "ssnr_max": -4.3775,
+  "n_utterances": 1665,
+  "segment_ms": 25.0,
+  "overlap_ms": 10.0,
+  "experiment": "mimi_hindi"
+}
