@@ -56,6 +56,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -64,14 +65,166 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torchaudio
 
+# Force "spawn" start method for worker processes.  The default "fork"
+# method copies the parent's CUDA driver state (GPU memory maps, driver
+# mutexes, internal threads) into the child.  Since CUDA's internal
+# threads are NOT duplicated by fork(), the child deadlocks the first
+# time it touches the CUDA runtime -- which torchaudio.load() and even
+# bare `import torch` can trigger.  "spawn" starts a fresh interpreter
+# so the child has no inherited CUDA context.
+#
+# We create a dedicated context rather than calling
+# multiprocessing.set_start_method() which would be a global side-effect.
+_MP_CONTEXT = multiprocessing.get_context("spawn")
+
 from train.config_loader import load_config
 
 logger = logging.getLogger(__name__)
 
-# Cap workers at 16 to avoid over-subscribing shared machines.
-# Each worker holds two loaded WAV arrays + intermediate resampled copies,
-# so per-worker memory is roughly 2-3x the largest utterance (~2 MB).
-_NUM_WORKERS = min(os.cpu_count() or 4, 16)
+# Hard upper bound on worker count regardless of available cores.
+# Prevents file-descriptor exhaustion and IPC overhead on machines
+# with very high core counts (e.g. 64-core AMD EPYC).
+_MAX_WORKERS_CAP = 16
+
+
+def _physical_core_count() -> int:
+    """Return the number of distinct physical CPU cores.
+
+    Reads ``/proc/cpuinfo`` and counts unique ``core id`` values.
+    Falls back to :func:`os.cpu_count` on non-Linux platforms or if
+    the file is unreadable.
+
+    Returns:
+        Physical core count (at least 1).
+    """
+    try:
+        core_ids: set[str] = set()
+        with open("/proc/cpuinfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("core id"):
+                    core_ids.add(line.split(":")[1].strip())
+        if core_ids:
+            return len(core_ids)
+    except (FileNotFoundError, OSError):
+        pass
+    return os.cpu_count() or 1
+
+
+def _select_num_workers() -> int:
+    """Choose the number of process-pool workers and log the reasoning.
+
+    Decision rules (evaluated in order):
+
+    1. Read three hardware signals:
+       - ``logical``  = ``os.cpu_count()`` (includes hyper-threads).
+       - ``affinity`` = ``os.sched_getaffinity(0)`` (respects cgroups).
+       - ``physical`` = distinct ``core id`` values in ``/proc/cpuinfo``.
+
+    2. Pick *effective* cores:
+       - **physical == 1 and logical > 1** (vCPU-only / single-socket):
+         All logical cores share one physical core.  Each extra worker
+         adds IPC + context-switch overhead with zero true parallelism
+         since DNSMOS (ONNX Runtime inference) is pure CPU-bound work.
+         Benchmarked on a 26-vCPU / 1-physical-core node: 1 worker
+         achieves 0.54 utt/s, 4 workers 0.50, 8 workers 0.43.
+         **Use 1 worker** -- sequential is fastest.
+       - **physical > 1 and physical < logical** (multi-core with HT):
+         Hyper-thread siblings share ALUs and cache.  CPU-bound metric
+         code (PESQ resampling, DNSMOS ONNX) sees no benefit from HT.
+         **Use physical core count**.
+       - **physical >= logical** (no HT or non-Linux fallback):
+         **Use affinity** (which may be < logical if cgroup-limited).
+
+    3. Clamp to ``[1, _MAX_WORKERS_CAP]``.
+
+    Every step is logged at INFO so the operator can see exactly why
+    a particular count was chosen and override if needed.
+
+    Returns:
+        Number of workers to use (at least 1).
+    """
+    logical: int = os.cpu_count() or 4
+    affinity: int = logical
+    try:
+        affinity = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        pass
+
+    physical = _physical_core_count()
+
+    if physical == 1 and logical > 1:
+        rule = (
+            f"vCPU-only machine ({logical} logical, 1 physical core): "
+            "all workers share one core so parallelism adds only overhead. "
+            "Using 1 worker (sequential)."
+        )
+        effective = 1
+    elif physical < logical:
+        rule = (
+            f"Hyper-threaded machine ({physical} physical, {logical} logical, "
+            f"{affinity} affinity): CPU-bound metrics (DNSMOS/PESQ) do not "
+            f"benefit from HT siblings. Using {min(physical, affinity)} "
+            "workers = min(physical, affinity)."
+        )
+        effective = min(physical, affinity)
+    else:
+        rule = (
+            f"Standard machine ({physical} physical, {logical} logical, "
+            f"{affinity} affinity): using {affinity} workers = affinity."
+        )
+        effective = affinity
+
+    workers = max(1, min(effective, _MAX_WORKERS_CAP))
+
+    logger.info(
+        "Worker selection: logical_cpus=%d, physical_cores=%d, "
+        "affinity=%d, cap=%d -> %d workers. %s",
+        logical, physical, affinity, _MAX_WORKERS_CAP, workers, rule,
+    )
+    return workers
+
+
+_NUM_WORKERS: int = _select_num_workers()
+
+# Required eval dependencies for each metric family.  Checked upfront
+# in run() before spawning workers to prevent thousands of silent
+# ImportError warnings in the process pool.
+_REQUIRED_DEPS: Dict[str, str] = {
+    "pesq": "pesq>=0.0.4  (install via: uv sync --extra eval)",
+    "pystoi": "pystoi>=0.4.0  (install via: uv sync --extra eval)",
+    "speechmos": "speechmos>=0.0.1  (install via: uv sync --extra eval)",
+    "librosa": "librosa>=0.10.0  (install via: uv sync --extra eval)",
+}
+
+
+def _check_eval_dependencies() -> None:
+    """Validate that all required eval packages are importable.
+
+    Called once in the main process before spawning worker processes.
+    Raises :class:`ImportError` with an actionable message listing
+    every missing package so the user can fix them all in one shot.
+
+    Raises:
+        ImportError: If one or more required packages are not installed.
+    """
+    missing: List[str] = []
+    for module_name, install_hint in _REQUIRED_DEPS.items():
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing.append(f"  - {module_name}: {install_hint}")
+
+    if missing:
+        raise ImportError(
+            "Bootstrap evaluation requires the following packages that are "
+            "not installed in the current Python environment "
+            f"({os.sys.executable}):\n"
+            + "\n".join(missing)
+            + "\n\nInstall all eval dependencies with:\n"
+            "  uv sync --extra eval\n"
+            "Then re-run with:\n"
+            "  uv run python eval/run_all.py ..."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +603,14 @@ def _compute_metrics_worker(
         their float values for this utterance.
     """
     ref_path, deg_path, sample_rate = args
-    return compute_utterance_metrics(ref_path, deg_path, sample_rate)
+    pid = os.getpid()
+    logger.debug("Worker %d: start %s", pid, Path(ref_path).stem)
+    result = compute_utterance_metrics(ref_path, deg_path, sample_rate)
+    logger.debug(
+        "Worker %d: done  %s  (%d metrics)",
+        pid, Path(ref_path).stem, len(result),
+    )
+    return result
 
 
 def run(
@@ -477,6 +637,8 @@ def run(
     Raises:
         FileNotFoundError: If the reconstruction manifest is missing.
     """
+    _check_eval_dependencies()
+
     config_path = Path("configs/experiments") / f"{experiment}.yaml"
     config = load_config(str(config_path))
     sample_rate = int(config["codec"]["sample_rate"])
@@ -493,19 +655,89 @@ def run(
     with open(recon_manifest_path, "r", encoding="utf-8") as fh:
         recon_manifest: List[Dict[str, Any]] = json.load(fh)
 
-    logger.info(
-        "Computing per-utterance metrics for %d utterances (%d workers)...",
-        len(recon_manifest), _NUM_WORKERS,
-    )
-
     work_items = [
         (entry["original_path"], entry["reconstructed_path"], sample_rate)
         for entry in recon_manifest
     ]
 
-    with ProcessPoolExecutor(max_workers=_NUM_WORKERS) as pool:
-        per_utterance: List[Dict[str, float]] = list(
-            pool.map(_compute_metrics_worker, work_items, chunksize=8)
+    total = len(work_items)
+
+    # ── Parallelisation parameters ───────────────────────────────────
+    #
+    # chunksize: Controls how many work items are dispatched to a worker
+    # in one IPC call.  chunksize=1 means every utterance result streams
+    # back immediately, giving accurate progress reporting and avoiding
+    # head-of-line blocking (where a slow utterance in a large chunk
+    # delays the entire chunk's results).  The tradeoff is higher IPC
+    # overhead per item, but for bootstrap metrics each item takes 1-6s
+    # so the ~0.1ms IPC cost is negligible.
+    #
+    # workers: Chosen by _select_num_workers() at module import time
+    # based on physical cores, affinity, and hardware topology.  Logged
+    # in detail by that function.
+    chunksize = 1
+
+    logger.info(
+        "Bootstrap pool config: workers=%d, chunksize=%d, "
+        "mp_start_method='%s', total_items=%d, items_per_worker=~%d. "
+        "Each utterance computes PESQ (nb+wb, resampled to 8/16kHz), "
+        "STOI, DNSMOS (ONNX inference, ~1-4s/utt), and MCD. "
+        "Using 'spawn' to avoid CUDA fork deadlock.",
+        _NUM_WORKERS, chunksize, _MP_CONTEXT.get_start_method(),
+        total, total // max(_NUM_WORKERS, 1),
+    )
+
+    import time as _time
+
+    per_utterance: List[Dict[str, float]] = []
+    t_start = _time.monotonic()
+    # Log every 5% or at least every 20 utterances, whichever is smaller.
+    log_interval = max(1, min(total // 20, 20))
+
+    with ProcessPoolExecutor(
+        max_workers=_NUM_WORKERS, mp_context=_MP_CONTEXT,
+    ) as pool:
+        for result in pool.map(
+            _compute_metrics_worker, work_items, chunksize=chunksize,
+        ):
+            per_utterance.append(result)
+            done = len(per_utterance)
+            if done % log_interval == 0 or done == total:
+                elapsed = _time.monotonic() - t_start
+                rate = done / elapsed if elapsed > 0 else 0
+                eta = (total - done) / rate if rate > 0 else 0
+                logger.info(
+                    "Bootstrap progress: %d/%d (%.0f%%) "
+                    "[%.1fs elapsed, %.2f utt/s, ETA %.0fs]",
+                    done, total, 100 * done / total,
+                    elapsed, rate, eta,
+                )
+
+    elapsed_total = _time.monotonic() - t_start
+    logger.info(
+        "Per-utterance metrics complete: %d utterances in %.1fs "
+        "(%.2f utt/s, %d workers).",
+        total, elapsed_total,
+        total / elapsed_total if elapsed_total > 0 else 0,
+        _NUM_WORKERS,
+    )
+
+    # Validate that critical metrics were actually computed.  If a
+    # dependency is installed but broken (or if every utterance
+    # triggered an exception), the results would be silently empty.
+    expected_metrics = {"pesq_wb", "stoi", "mcd"}
+    present_metrics: set[str] = set()
+    for m in per_utterance:
+        present_metrics.update(m.keys())
+
+    missing_everywhere = expected_metrics - present_metrics
+    if missing_everywhere:
+        logger.error(
+            "The following metrics were missing from ALL %d utterances: %s. "
+            "This usually means a required package is broken or incompatible. "
+            "Check the warnings above for details.",
+            len(per_utterance),
+            ", ".join(sorted(missing_everywhere)),
         )
 
     # Bootstrap.

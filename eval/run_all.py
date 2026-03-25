@@ -202,16 +202,16 @@ class EvalState:
 def _stage_banner(name: str, index: int, total: int, resumed: bool = False) -> None:
     """Print a visible banner for the current stage."""
     tag = "  [RESUMED]" if resumed else ""
-    print(f"\n{_SEPARATOR}")
-    print(f"  STAGE {index}/{total}: {name}{tag}")
-    print(f"{_SEPARATOR}\n")
+    print(f"\n{_SEPARATOR}", flush=True)
+    print(f"  STAGE {index}/{total}: {name}{tag}", flush=True)
+    print(f"{_SEPARATOR}\n", flush=True)
 
 
 def _skip_banner(name: str, index: int, total: int) -> None:
     """Print a banner indicating the stage was skipped (already done)."""
-    print(f"\n{_SEPARATOR}")
-    print(f"  STAGE {index}/{total}: {name}  [CACHED -- skipping]")
-    print(f"{_SEPARATOR}\n")
+    print(f"\n{_SEPARATOR}", flush=True)
+    print(f"  STAGE {index}/{total}: {name}  [CACHED -- skipping]", flush=True)
+    print(f"{_SEPARATOR}\n", flush=True)
 
 
 def _save_json(data: Any, path: Path) -> None:
@@ -344,6 +344,7 @@ def _run_versa_shard(
     pred_scp: str,
     output_file: str,
     score_config: str,
+    threads_per_shard: int = 1,
 ) -> subprocess.CompletedProcess:
     """Launch one VERSA scorer process for a manifest shard.
 
@@ -352,6 +353,13 @@ def _run_versa_shard(
     ``VERSA_SHARD_OUTPUT``, ``VERSA_SCORE_CONFIG``) that override the
     default manifest-based scp generation.  This lets multiple shards
     run concurrently without file-name collisions.
+
+    Per-shard thread count is capped via ``OMP_NUM_THREADS``,
+    ``MKL_NUM_THREADS``, etc. to prevent contention when multiple
+    shards run concurrently.  Without this, each VERSA subprocess
+    inherits the default thread count (``os.cpu_count()``), and on a
+    vCPU-only machine N shards x 80+ threads causes catastrophic
+    context-switch overhead (load avg >70, zero throughput).
 
     Args:
         script: Absolute path to ``eval/run_versa.sh``.
@@ -363,10 +371,26 @@ def _run_versa_shard(
         output_file: Path where VERSA will write JSON-lines output
             for this shard.
         score_config: Path to the VERSA score configuration YAML.
+        threads_per_shard: Maximum number of threads this shard's
+            subprocess may use (controls OMP, MKL, OpenBLAS, etc.).
 
     Returns:
         The :class:`subprocess.CompletedProcess` from the VERSA run.
     """
+    logger.info(
+        "VERSA shard %d: launching (gt=%s, pred=%s, output=%s)",
+        shard_idx, gt_scp, pred_scp, output_file,
+    )
+    t0 = time.monotonic()
+
+    # Limit per-process threading to prevent contention when multiple
+    # shards run concurrently.  Each VERSA subprocess loads PyTorch,
+    # ONNX Runtime, and OpenMP-backed libraries that all default to
+    # os.cpu_count() threads.  On a 26-vCPU / 1-physical-core machine,
+    # 4 shards x 80 threads = 320 threads on 1 core -> load avg >70,
+    # zero throughput.  Capping to threads_per_shard keeps total thread
+    # count = n_shards * threads_per_shard, which is manageable.
+    tps = str(threads_per_shard)
     env = {
         **os.environ,
         "PYTHON": sys.executable,
@@ -374,13 +398,32 @@ def _run_versa_shard(
         "VERSA_SHARD_PRED": pred_scp,
         "VERSA_SHARD_OUTPUT": output_file,
         "VERSA_SCORE_CONFIG": score_config,
+        "OMP_NUM_THREADS": tps,
+        "MKL_NUM_THREADS": tps,
+        "OPENBLAS_NUM_THREADS": tps,
+        "NUMEXPR_NUM_THREADS": tps,
+        "VECLIB_MAXIMUM_THREADS": tps,
     }
-    return subprocess.run(
+    result = subprocess.run(
         ["bash", str(script), experiment],
         capture_output=True,
         text=True,
         env=env,
     )
+
+    elapsed = time.monotonic() - t0
+    if result.returncode == 0:
+        logger.info(
+            "VERSA shard %d: completed in %.1fs (exit 0)",
+            shard_idx, elapsed,
+        )
+    else:
+        logger.error(
+            "VERSA shard %d: FAILED in %.1fs (exit %d)\nstderr:\n%s",
+            shard_idx, elapsed, result.returncode,
+            result.stderr[:2000] if result.stderr else "(empty)",
+        )
+    return result
 
 
 def _run_versa(
@@ -459,23 +502,77 @@ def _run_versa(
     with open(manifest_path, "r", encoding="utf-8") as fh:
         manifest: List[Dict[str, Any]] = json.load(fh)
 
-    # Don't create more shards than utterances.
+    # Detect physical vs logical cores to set per-shard thread limits.
+    # The previous approach capped *shard count* to physical cores, but
+    # that reduced parallelism to 1 on vCPU-only machines.  The real
+    # problem was uncontrolled *thread count per shard*: each VERSA
+    # subprocess defaults to os.cpu_count() threads via PyTorch/ONNX/
+    # OpenMP, so 4 shards x 80 threads = 320 threads on 1 core.
+    #
+    # Fix: keep N shards for process-level parallelism (overlapping
+    # I/O, GPU waits, and CPU work across shards), but cap per-shard
+    # threads so total_threads = n_shards * threads_per_shard stays
+    # manageable.
+    physical = 1
+    try:
+        core_ids: set = set()
+        with open("/proc/cpuinfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("core id"):
+                    core_ids.add(line.split(":")[1].strip())
+        if core_ids:
+            physical = len(core_ids)
+    except (FileNotFoundError, OSError):
+        physical = os.cpu_count() or 1
+
+    logical = os.cpu_count() or 1
     actual_shards = min(n_shards, len(manifest))
-    if actual_shards < 2:
+    if actual_shards < 1:
         actual_shards = 1
 
+    # Per-shard thread budget.  On vCPU-only machines (1 physical core,
+    # many logical) every vCPU shares the same execution units, so
+    # intra-process parallelism gives zero benefit -- 1 thread per
+    # shard is optimal.  On multi-core machines, divide physical cores
+    # evenly among shards so total threads ~ physical core count.
+    if physical == 1 and logical > 1:
+        threads_per_shard = 1
+    else:
+        threads_per_shard = max(1, physical // actual_shards)
+
+    total_threads = actual_shards * threads_per_shard
     logger.info(
-        "Running VERSA evaluation (%d shards, %d utterances)...",
-        actual_shards, len(manifest),
+        "VERSA shard selection: requested=%d, physical_cores=%d, "
+        "logical_cpus=%d -> %d shards x %d threads/shard = %d total "
+        "threads. %s",
+        n_shards, physical, logical, actual_shards,
+        threads_per_shard, total_threads,
+        f"vCPU-only machine: {actual_shards} shards with 1 thread each "
+        "for process-level I/O overlap without thread contention."
+        if physical == 1 and logical > 1
+        else f"Using {actual_shards} parallel shards, "
+        f"{threads_per_shard} threads each.",
     )
 
     score_config = str(Path(__file__).parent / "versa_score_config.yaml")
     shard_size = (len(manifest) + actual_shards - 1) // actual_shards
     tmp_dir = tempfile.mkdtemp(prefix="versa_shards_")
 
+    logger.info(
+        "VERSA config: shards=%d, threads_per_shard=%d, "
+        "total_utterances=%d, utterances_per_shard=~%d, "
+        "score_config=%s, tmp_dir=%s. "
+        "Each shard runs an independent run_versa.sh subprocess "
+        "with OMP/MKL/OpenBLAS threads capped at %d.",
+        actual_shards, threads_per_shard, len(manifest), shard_size,
+        score_config, tmp_dir, threads_per_shard,
+    )
+
     # ---- Launch shards in parallel ----------------------------------------
     shard_outputs: List[str] = []
+    shard_sizes: List[int] = []
     futures = {}
+    versa_t0 = time.monotonic()
 
     with ThreadPoolExecutor(max_workers=actual_shards) as pool:
         for si in range(actual_shards):
@@ -488,6 +585,7 @@ def _run_versa(
             pred_scp = os.path.join(tmp_dir, f"pred_{si}.scp")
             out_file = os.path.join(tmp_dir, f"versa_{si}.json")
             shard_outputs.append(out_file)
+            shard_sizes.append(len(chunk))
 
             with open(gt_scp, "w") as gf, open(pred_scp, "w") as pf:
                 for entry in chunk:
@@ -498,22 +596,94 @@ def _run_versa(
                     gf.write(f"{utt_id} {os.path.abspath(entry['original_path'])}\n")
                     pf.write(f"{utt_id} {os.path.abspath(entry['reconstructed_path'])}\n")
 
+            logger.info(
+                "VERSA shard %d/%d: %d utterances queued.",
+                si + 1, actual_shards, len(chunk),
+            )
+
             fut = pool.submit(
                 _run_versa_shard,
                 script, experiment, si,
                 gt_scp, pred_scp, out_file, score_config,
+                threads_per_shard,
             )
             futures[fut] = si
 
-        # Collect results; fail fast on any shard error.
-        for fut in as_completed(futures):
-            si = futures[fut]
-            result = fut.result()
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"VERSA shard {si} exited with code {result.returncode}:\n"
-                    f"{result.stderr}"
+        # Background thread: poll shard output files every 60s and log
+        # per-shard + total utterance progress so long-running VERSA
+        # stages don't appear stuck.
+        import threading
+
+        _monitor_stop = threading.Event()
+
+        def _monitor_shard_progress() -> None:
+            """Count lines in each shard output file periodically."""
+            while not _monitor_stop.wait(timeout=60):
+                elapsed = time.monotonic() - versa_t0
+                per_shard = []
+                total_done = 0
+                for idx, (out_f, sz) in enumerate(
+                    zip(shard_outputs, shard_sizes),
+                ):
+                    try:
+                        with open(out_f, "r") as fh:
+                            n = sum(1 for line in fh if line.strip())
+                    except FileNotFoundError:
+                        n = 0
+                    total_done += n
+                    per_shard.append(f"s{idx}={n}/{sz}")
+                rate = total_done / elapsed if elapsed > 0 else 0
+                remaining = len(manifest) - total_done
+                eta = remaining / rate if rate > 0 else 0
+                logger.info(
+                    "VERSA progress: %d/%d utterances (%.0f%%) "
+                    "[%.0fs elapsed, %.2f utt/s, ETA %.0fs]. "
+                    "Per-shard: %s",
+                    total_done, len(manifest),
+                    100 * total_done / max(len(manifest), 1),
+                    elapsed, rate, eta,
+                    ", ".join(per_shard),
                 )
+
+        monitor = threading.Thread(
+            target=_monitor_shard_progress, daemon=True,
+        )
+        monitor.start()
+
+        # Collect results as shards finish; log progress after each.
+        shards_done = 0
+        try:
+            for fut in as_completed(futures):
+                si = futures[fut]
+                result = fut.result()
+                shards_done += 1
+                versa_elapsed = time.monotonic() - versa_t0
+
+                if result.returncode != 0:
+                    logger.error(
+                        "VERSA shard %d FAILED (exit %d) after %.1fs. "
+                        "Shards completed: %d/%d.",
+                        si, result.returncode, versa_elapsed,
+                        shards_done, actual_shards,
+                    )
+                    raise RuntimeError(
+                        f"VERSA shard {si} exited with code {result.returncode}:\n"
+                        f"{result.stderr}"
+                    )
+
+                logger.info(
+                    "VERSA shard %d complete (%d/%d shards, %.1fs elapsed).",
+                    si, shards_done, actual_shards, versa_elapsed,
+                )
+        finally:
+            _monitor_stop.set()
+            monitor.join(timeout=5)
+
+    versa_total = time.monotonic() - versa_t0
+    logger.info(
+        "All VERSA shards complete in %.1fs (%.1f min).",
+        versa_total, versa_total / 60,
+    )
 
     # ---- Merge shard JSON-lines outputs -----------------------------------
     per_utt: List[Dict[str, Any]] = []
@@ -797,7 +967,7 @@ def _write_local_report(
     lines.append(_SEPARATOR)
 
     report_text = "\n".join(lines)
-    print(report_text)
+    print(report_text, flush=True)
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     with open(report_path, "w", encoding="utf-8") as fh:
@@ -913,7 +1083,7 @@ def run_all(
             logger.error("Reconstruction FAILED: %s", exc)
             all_results["reconstruction"] = {"status": "failed", "error": str(exc)}
             state.mark_failed("reconstruction", str(exc))
-            print(f"\nFATAL: Reconstruction failed -- cannot continue.\n  {exc}")
+            print(f"\nFATAL: Reconstruction failed -- cannot continue.\n  {exc}", flush=True)
             _save_json(all_results, results_dir / f"{experiment}_run_all.json")
             return all_results
 
@@ -1153,10 +1323,10 @@ def run_all(
 
     failed = [s for s, st in stage_statuses if st == "failed"]
     if failed:
-        print(f"\nWARNING: The following stages failed: {', '.join(failed)}")
-        print("Re-run the same command to retry only the failed stages.\n")
+        print(f"\nWARNING: The following stages failed: {', '.join(failed)}", flush=True)
+        print("Re-run the same command to retry only the failed stages.\n", flush=True)
     else:
-        print("\nAll evaluation stages completed successfully.\n")
+        print("\nAll evaluation stages completed successfully.\n", flush=True)
 
     return all_results
 

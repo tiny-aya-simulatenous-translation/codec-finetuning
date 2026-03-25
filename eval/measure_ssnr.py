@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -54,10 +55,75 @@ from train.config_loader import load_config
 
 logger = logging.getLogger(__name__)
 
-# Cap workers at 16 to avoid over-subscribing shared machines.
-# Each worker loads two WAV files and runs lightweight numpy ops,
-# so memory pressure is negligible.
-_NUM_WORKERS = min(os.cpu_count() or 4, 16)
+# Use "spawn" so worker processes do not inherit the parent's CUDA
+# driver state.  fork() + CUDA = deadlock (see bootstrap_eval.py).
+_MP_CONTEXT = multiprocessing.get_context("spawn")
+
+# Hard upper bound on worker count regardless of available cores.
+_MAX_WORKERS_CAP = 16
+
+
+def _select_num_workers() -> int:
+    """Choose workers based on physical cores, affinity, and a hard cap.
+
+    Decision rules:
+      - 1 physical core, N logical (vCPU-only): use 1 worker.
+        SSNR is numpy-only and CPU-bound; extra workers on a single
+        physical core just add IPC and context-switch overhead.
+      - M physical < N logical (HT): use min(physical, affinity).
+      - Otherwise: use affinity count, capped at 16.
+
+    Logs the decision and all inputs at INFO level.
+    """
+    logical: int = os.cpu_count() or 4
+    affinity: int = logical
+    try:
+        affinity = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        pass
+    physical: int = logical
+    try:
+        core_ids: set[str] = set()
+        with open("/proc/cpuinfo", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("core id"):
+                    core_ids.add(line.split(":")[1].strip())
+        if core_ids:
+            physical = len(core_ids)
+    except (FileNotFoundError, OSError):
+        pass
+
+    if physical == 1 and logical > 1:
+        rule = (
+            f"vCPU-only ({logical} logical, 1 physical): "
+            "SSNR is pure numpy/CPU-bound, no benefit from time-sliced "
+            "parallelism. Using 1 worker."
+        )
+        effective = 1
+    elif physical < logical:
+        effective = min(physical, affinity)
+        rule = (
+            f"HT machine ({physical} phys, {logical} logical, "
+            f"{affinity} affinity): using {effective} workers = "
+            "min(physical, affinity)."
+        )
+    else:
+        effective = affinity
+        rule = (
+            f"Standard ({physical} phys, {logical} logical, "
+            f"{affinity} affinity): using {effective} workers."
+        )
+
+    workers = max(1, min(effective, _MAX_WORKERS_CAP))
+    logger.info(
+        "SSNR worker selection: logical=%d, physical=%d, "
+        "affinity=%d, cap=%d -> %d workers. %s",
+        logical, physical, affinity, _MAX_WORKERS_CAP, workers, rule,
+    )
+    return workers
+
+
+_NUM_WORKERS: int = _select_num_workers()
 
 # Minimum signal power (mean squared amplitude) for a segment to be
 # considered "active".  Segments below this threshold are excluded from
@@ -223,11 +289,6 @@ def run(
     with open(recon_manifest_path, "r", encoding="utf-8") as fh:
         manifest: List[Dict[str, Any]] = json.load(fh)
 
-    logger.info(
-        "Computing SSNR for %d utterances (%d workers)...",
-        len(manifest), _NUM_WORKERS,
-    )
-
     work_items = [
         (
             entry["original_path"],
@@ -239,8 +300,42 @@ def run(
         for entry in manifest
     ]
 
-    with ProcessPoolExecutor(max_workers=_NUM_WORKERS) as pool:
-        ssnr_values = list(pool.map(_compute_ssnr_for_entry, work_items, chunksize=32))
+    total = len(work_items)
+
+    # chunksize=32 is appropriate for SSNR because each item is very
+    # lightweight (~1ms of numpy ops).  Larger chunks amortise the IPC
+    # overhead of sending work items and results between processes.
+    # With chunksize=1 the per-item IPC cost would dominate.
+    chunksize = 32
+
+    logger.info(
+        "SSNR pool config: workers=%d, chunksize=%d, "
+        "mp_start_method='%s', total_items=%d. "
+        "Each utterance is ~1ms of numpy segment-wise SNR. "
+        "Using 'spawn' to avoid CUDA fork deadlock.",
+        _NUM_WORKERS, chunksize, _MP_CONTEXT.get_start_method(), total,
+    )
+
+    import time as _time
+
+    ssnr_values: List[float] = []
+    t_start = _time.monotonic()
+    log_interval = max(1, min(total // 10, 100))
+
+    with ProcessPoolExecutor(
+        max_workers=_NUM_WORKERS, mp_context=_MP_CONTEXT,
+    ) as pool:
+        for val in pool.map(_compute_ssnr_for_entry, work_items, chunksize=chunksize):
+            ssnr_values.append(val)
+            done = len(ssnr_values)
+            if done % log_interval == 0 or done == total:
+                elapsed = _time.monotonic() - t_start
+                rate = done / elapsed if elapsed > 0 else 0
+                logger.info(
+                    "SSNR progress: %d/%d (%.0f%%) "
+                    "[%.1fs elapsed, %.1f utt/s]",
+                    done, total, 100 * done / total, elapsed, rate,
+                )
 
     ssnr_arr = np.array(ssnr_values, dtype=np.float64)
     stats: Dict[str, Any] = {
