@@ -197,7 +197,7 @@ def _load_from_huggingface(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         RuntimeError: If HuggingFace authentication fails for a private repo.
     """
     try:
-        from datasets import load_dataset
+        from datasets import Audio, load_dataset
     except ImportError as exc:
         raise ImportError(
             "The 'datasets' library is required for HuggingFace loading. "
@@ -211,6 +211,7 @@ def _load_from_huggingface(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     text_col: str = ds_cfg.get("text_column", "text")
     speaker_col: Optional[str] = ds_cfg.get("speaker_column")
     duration_col: Optional[str] = ds_cfg.get("duration_column")
+    target_sr: int = ds_cfg.get("target_sr", 24_000)
 
     logger.info("Loading HuggingFace dataset: %s (split=%s)", hf_repo, hf_split)
     try:
@@ -223,16 +224,28 @@ def _load_from_huggingface(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             ) from exc
         raise
 
+    # Cast the audio column to the Audio feature so that datasets decodes
+    # and resamples audio on-the-fly via torchcodec.  Without this, newer
+    # versions of datasets (>=4.x) return a lazy AudioDecoder object
+    # instead of the expected {"array": ..., "sampling_rate": ...} dict.
+    hf_ds = hf_ds.cast_column(audio_col, Audio(sampling_rate=target_sr, decode=True))
+
     examples: List[Dict[str, Any]] = []
     for idx, row in enumerate(tqdm(hf_ds, desc="Loading HF examples")):
         audio_data = row[audio_col]
-        # HF audio feature returns {"array": np.ndarray, "sampling_rate": int}
+        # datasets >=4.x with torchcodec backend returns an AudioDecoder
+        # object instead of a dict.  Call get_all_samples() to extract the
+        # torch tensor and sample rate, then convert to numpy.
         if isinstance(audio_data, dict):
             audio_array = np.array(audio_data["array"], dtype=np.float32)
             sr = int(audio_data["sampling_rate"])
+        elif hasattr(audio_data, "get_all_samples"):
+            samples = audio_data.get_all_samples()
+            audio_array = samples.data.squeeze(0).numpy().astype(np.float32)
+            sr = int(samples.sample_rate)
         else:
             audio_array = np.array(audio_data, dtype=np.float32)
-            sr = int(ds_cfg.get("original_sr") or 24_000)
+            sr = int(ds_cfg.get("original_sr") or target_sr)
 
         text = str(row.get(text_col, ""))
         speaker = str(row[speaker_col]) if speaker_col and speaker_col in row else f"spk_{idx:05d}"
