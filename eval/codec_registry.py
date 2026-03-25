@@ -279,12 +279,12 @@ def _load_dualcodec(
     """
     import dualcodec
 
-    model = dualcodec.load_model(config["codec"]["pretrained"])
+    model = dualcodec.get_model(config["codec"]["pretrained"])
     if checkpoint is not None:
         sd = _load_checkpoint_state(checkpoint, use_ema, device)
         if sd is not None:
             model.load_state_dict(sd, strict=False)
-    return model.to(device).eval()
+    return dualcodec.Inference(model, device=str(device))
 
 
 def _encode_decode_dualcodec(model: Any, waveform: torch.Tensor) -> torch.Tensor:
@@ -297,8 +297,14 @@ def _encode_decode_dualcodec(model: Any, waveform: torch.Tensor) -> torch.Tensor
     Returns:
         Reconstructed audio tensor.
     """
-    tokens = model.encode(waveform)
-    return model.decode(tokens)
+    # Disable outer autocast -- DualCodec Inference manages its own
+    # mixed-precision internally (float16).  The bfloat16 autocast from
+    # reconstruct.py causes "unsupported ScalarType BFloat16" in
+    # torchaudio resampling inside the w2v-bert-2.0 feature path.
+    with torch.amp.autocast("cuda", enabled=False):
+        waveform = waveform.float()
+        semantic_codes, acoustic_codes = model.encode(waveform)
+        return model.decode(semantic_codes, acoustic_codes)
 
 
 # -- Kanade ----------------------------------------------------------------
