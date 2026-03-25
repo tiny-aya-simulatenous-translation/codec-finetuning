@@ -1,0 +1,63 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPERIMENT: Evaluate pretrained DualCodec on Lahaja Hindi eval set
+#
+# Purpose: Baseline evaluation of DualCodec (no fine-tuning) on the Lahaja
+#          Hindi benchmark for comparison with fine-tuned Mimi.
+# Codec:   DualCodec (amphion/dualcodec 12hz_v1, ~200M params, 12.5Hz)
+# Dataset: Lahaja-eval (~6.2h, tiny-aya-translate/lahaja-eval, public)
+#
+# Usage:
+#   uv run python eval/run_all.py \
+#       --config configs/experiments/dualcodec_lahaja_baseline.yaml \
+#       --skip-wandb
+# ══════════════════════════════════════════════════════════════════════════════
+
+_bases_:
+  - "../base.yaml"
+  - "../codecs/dualcodec.yaml"
+  - "../datasets/lahaja.yaml"
+
+# ── Training hyperparameters (required by config validation, not used) ──────
+
+optimizer:
+  name: "schedulefree_adamw"
+  lr: !!float 2e-4
+  betas: [0.9, 0.95]
+  weight_decay: 0.0
+
+scheduler:
+  name: "constant"
+  warmup_steps: 0
+
+training:
+  max_steps: 80000
+  eval_every: 2000
+  save_every: 5000
+  log_every: 50
+  audio_log_every: 500
+
+codec:
+  latency_ms: 0              # Batch eval: no streaming latency alignment needed.
+  training:
+    segment_s: 5.0
+    freeze_encoder_steps: 0
+
+augmentation:
+  preset: "none"
+
+discriminator:
+  warmup_steps: 0
+  lr_ratio: 0.1
+  r1_penalty: 50.0
+
+ema:
+  decay: 0.999
+
+early_stopping:
+  patience: 5
+
+wandb:
+  tags: ["dualcodec", "lahaja", "baseline", "eval"]
+  run_name: "dualcodec-lahaja-baseline"
+
+output_dir: "outputs/dualcodec_lahaja_baseline"
