@@ -1,22 +1,23 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# EXPERIMENT: Fine-tune Mimi on full Turkish dataset (~100h)
+# EXPERIMENT: Evaluate fine-tuned Mimi on Turkish sample test set
 #
-# Purpose: Phase 2 -- full-scale training on Turkish speech.
+# Purpose: Evaluate the best sweep checkpoint (ooz250pm) on the held-out
+#          Turkish test set (252 utterances).
 # Codec:   Mimi (kyutai/mimi, 96M params, 12.5Hz, 8 codebooks)
-# Dataset: Turkish full (~251k utt, tiny-aya-translate/tr-subset-v0.1)
-#
-# Hyperparameters: Best run (ooz250pm) from mimi-hp-sweep (j7oxgz4p),
-#                  val_loss=0.01222 on 10h Turkish sample. Scaled training
-#                  budget for ~100h dataset.
+# Dataset: Turkish sample (10h, MediaSpeech OpenSLR 108, CC BY 4.0)
+# Checkpoint: outputs/sweeps/mimi_turkish_sample/ooz250pm/checkpoint_step_5000.pt
 #
 # Usage:
-#   uv run python train/train_mimi.py --config configs/experiments/mimi_turkish_full.yaml
+#   uv run python eval/run_all.py \
+#       --config configs/experiments/mimi_turkish_eval.yaml \
+#       --checkpoint outputs/sweeps/mimi_turkish_sample/ooz250pm/checkpoint_step_5000.pt \
+#       --use-ema
 # ══════════════════════════════════════════════════════════════════════════════
 
 _bases_:
   - "../base.yaml"
   - "../codecs/mimi.yaml"
-  - "../datasets/turkish_full.yaml"
+  - "../datasets/turkish_sample.yaml"
 
 # ── Overrides from best sweep run (ooz250pm) ────────────────────────────────
 
@@ -31,11 +32,7 @@ scheduler:
   warmup_steps: 0
 
 training:
-  max_steps: 50000             # ~10x data vs sweep (10h), scaled from 5000.
-  eval_every: 1000
-  save_every: 2500
-  log_every: 50
-  audio_log_every: 500
+  max_steps: 5000
 
 codec:
   training:
@@ -53,11 +50,8 @@ discriminator:
 ema:
   decay: 0.999
 
-early_stopping:
-  patience: 10
-
 wandb:
-  tags: ["mimi", "turkish", "full", "phase2", "sweep-best"]
-  run_name: "mimi-turkish-full-sweep-best"
+  tags: ["mimi", "turkish", "eval", "sweep-best"]
+  run_name: "mimi-turkish-eval"
 
-output_dir: "outputs/mimi_turkish_full"
+output_dir: "outputs/mimi_turkish_eval"
