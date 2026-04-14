@@ -748,6 +748,19 @@ def train(config: Dict[str, Any]) -> None:
         optimizer.train()
     optimizer.zero_grad()
 
+    # ── Step 0: baseline val_loss before any training ────────────
+    if start_step == 0:
+        if metadata.get("needs_eval_mode"):
+            optimizer.eval()
+        val_loss_0 = validate(model, val_loader, config)
+        torch.cuda.empty_cache()
+        logger.info("step=0  val_loss=%.4f  (pretrained baseline)", val_loss_0)
+        if metadata.get("needs_eval_mode"):
+            optimizer.train()
+        if wandb_enabled:
+            import wandb
+            wandb.log({"val/loss": val_loss_0}, step=0)
+
     try:
         for step in range(start_step + 1, max_steps + 1):
             if _shutdown_requested:
