@@ -118,6 +118,9 @@ def _seed_dataloader_worker(worker_id: int) -> None:
         worker_id: Unused worker index supplied by :class:`DataLoader`.
     """
     del worker_id
+    # Patch torchaudio to use soundfile on aarch64 (torchcodec unavailable).
+    # Must be done per-worker since spawn creates fresh processes.
+    import eval._audio_compat  # noqa: F401
     worker_seed = torch.initial_seed() % (2 ** 32)
     np.random.seed(worker_seed)
     random.seed(worker_seed)
