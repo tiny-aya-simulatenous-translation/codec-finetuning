@@ -64,12 +64,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torchaudio
+import eval._audio_compat  # noqa: F401
 
-# Prefer soundfile backend — torchcodec is unavailable on aarch64.
-try:
-    torchaudio.set_audio_backend("soundfile")
-except RuntimeError:
-    pass
 
 # Force "spawn" start method for worker processes.  The default "fork"
 # method copies the parent's CUDA driver state (GPU memory maps, driver

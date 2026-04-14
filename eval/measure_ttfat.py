@@ -43,12 +43,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 import torchaudio
+import eval._audio_compat  # noqa: F401
 
-# Prefer soundfile backend — torchcodec is unavailable on aarch64.
-try:
-    torchaudio.set_audio_backend("soundfile")
-except RuntimeError:
-    pass
 
 from eval.reconstruct import load_model
 from train.config_loader import load_config
