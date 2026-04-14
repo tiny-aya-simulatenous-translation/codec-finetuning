@@ -1,12 +1,12 @@
-# Evaluate pretrained Mimi on Turkish full test set (in-distribution)
+# Evaluate pretrained DualCodec on Turkish CV test set (in-distribution)
 _bases_:
   - "../base.yaml"
-  - "../codecs/mimi.yaml"
-  - "../datasets/turkish_full.yaml"
+  - "../codecs/dualcodec.yaml"
+  - "../datasets/turkish_cv.yaml"
 
 optimizer:
   name: "schedulefree_adamw"
-  lr: !!float 1e-4
+  lr: !!float 2e-4
   betas: [0.9, 0.95]
   weight_decay: 0.0
 
@@ -15,16 +15,16 @@ scheduler:
   warmup_steps: 0
 
 training:
-  max_steps: 50000
-  eval_every: 1000
-  save_every: 2500
+  max_steps: 80000
+  eval_every: 2000
+  save_every: 5000
   log_every: 50
   audio_log_every: 500
 
 codec:
   latency_ms: 0
   training:
-    segment_s: 10.0
+    segment_s: 5.0
     freeze_encoder_steps: 0
 
 augmentation:
@@ -39,10 +39,10 @@ ema:
   decay: 0.999
 
 early_stopping:
-  patience: 10
+  patience: 5
 
 wandb:
-  tags: ["mimi", "turkish", "baseline", "eval"]
-  run_name: "mimi-turkish-full-baseline"
+  tags: ["dualcodec", "turkish", "baseline", "eval"]
+  run_name: "dualcodec-turkish-cv-baseline"
 
-output_dir: "outputs/mimi_turkish_full_baseline"
+output_dir: "outputs/dualcodec_turkish_cv_baseline"
