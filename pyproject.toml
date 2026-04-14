@@ -49,7 +49,7 @@ eval = [
     "jiwer>=3.0.0",
     "openai-whisper",
     "setuptools<81",
-    "flash-attn>=2.5.0",
+    "flash-attn>=2.5.0; platform_machine != 'aarch64'",
     "versa-speech-audio-toolkit",
     "pysepm",
     "SRMRpy",
