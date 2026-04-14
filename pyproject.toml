@@ -83,9 +83,18 @@ all = [
 # UTMOSv2 LFS weights: cd <utmosv2-clone> && git lfs pull && ln -s $(pwd) ~/.cache/utmosv2
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
-torchaudio = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
-torchvision = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
+torch = [
+    { index = "pytorch-cu128", marker = "platform_machine == 'aarch64'" },
+    { index = "pytorch-cu126", marker = "platform_machine != 'aarch64'" },
+]
+torchaudio = [
+    { index = "pytorch-cu128", marker = "platform_machine == 'aarch64'" },
+    { index = "pytorch-cu126", marker = "platform_machine != 'aarch64'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "platform_machine == 'aarch64'" },
+    { index = "pytorch-cu126", marker = "platform_machine != 'aarch64'" },
+]
 kanade-tokenizer = { git = "https://github.com/frothywater/kanade-tokenizer" }
 versa-speech-audio-toolkit = { git = "https://github.com/shinjiwlab/versa.git" }
 pysepm = { git = "https://github.com/ftshijt/pysepm.git" }
@@ -98,7 +107,10 @@ scoreq-versa = { git = "https://github.com/ftshijt/scoreq.git" }
 nomad-versa = { git = "https://github.com/shimhz/nomad.git" }
 emo2vec-versa = { git = "https://github.com/ftshijt/emotion2vec.git" }
 utmosv2 = { git = "https://github.com/ftshijt/UTMOSv2.git" }
-torchcodec = [{ index = "pytorch-cu126", marker = "sys_platform == 'linux'" }]
+torchcodec = [
+    { index = "pytorch-cu128", marker = "platform_machine == 'aarch64'" },
+    { index = "pytorch-cu126", marker = "platform_machine != 'aarch64'" },
+]
 
 [tool.uv.extra-build-dependencies]
 flash-attn = ["torch"]
@@ -117,6 +129,11 @@ override-dependencies = [
 [[tool.uv.index]]
 name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [build-system]
