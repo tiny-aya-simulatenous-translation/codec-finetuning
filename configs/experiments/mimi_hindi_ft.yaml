@@ -1,0 +1,61 @@
+# Fine-tune Mimi on Hindi (hinglish-casual) with conservative hyperparameters.
+#
+# Changes from the previous (broken) fine-tuning run:
+#   - LR: 1e-4 (was 1e-3, 10x lower)
+#   - Steps: 10,000 (was 50,000, 5x fewer = ~5 epochs)
+#   - Cosine schedule with 500-step warmup (was constant, no warmup)
+#   - Freeze encoder for 2000 steps (was 0)
+#   - Light augmentation (was none)
+#
+# Usage:
+#   uv run python train/train_mimi.py \
+#       --config configs/experiments/mimi_hindi_ft.yaml
+
+_bases_:
+  - "../base.yaml"
+  - "../codecs/mimi.yaml"
+  - "../datasets/hindi.yaml"
+
+optimizer:
+  name: "schedulefree_adamw"
+  lr: !!float 1e-4
+  betas: [0.9, 0.95]
+  weight_decay: 0.01
+
+scheduler:
+  name: "cosine"
+  warmup_steps: 500
+  min_lr_ratio: 0.01
+
+training:
+  max_steps: 10000
+  eval_every: 500
+  save_every: 1000
+  log_every: 50
+  audio_log_every: 500
+
+codec:
+  latency_ms: 0
+  training:
+    segment_s: 10.0
+    freeze_encoder_steps: 2000
+
+augmentation:
+  preset: "light"
+
+discriminator:
+  warmup_steps: 500
+  lr_ratio: 0.1
+  r1_penalty: 50.0
+
+ema:
+  decay: 0.999
+
+early_stopping:
+  patience: 5
+
+wandb:
+  tags: ["mimi", "hindi", "ft-v2", "conservative"]
+  run_name: "mimi-hindi-ft-v2"
+
+output_dir: "outputs/mimi_hindi_ft"
