@@ -7,10 +7,9 @@ license = { text = "MIT" }
 authors = [{ name = "codec-finetuning contributors" }]
 readme = "README.md"
 dependencies = [
-    "torch>=2.10.0,<2.11",
-    "torchaudio>=2.10.0,<2.11",
-    "torchvision>=0.25.0,<0.26",
-    "moshi>=0.2.13",
+    "torch>=2.9.1,<2.10",
+    "torchaudio>=2.9.1,<2.10",
+    "torchvision>=0.24.1,<0.25",
     "dualcodec>=0.4.2",
     "kanade-tokenizer",
     "transformers>=4.46.0",
@@ -24,10 +23,13 @@ dependencies = [
     "tqdm",
     "pyyaml",
     "wandb>=0.19.0",
-    "torchcodec>=0.9.0",
+    "torchcodec>=0.9.0; platform_machine != 'aarch64'",
 ]
 
 [project.optional-dependencies]
+moshi = [
+    "moshi>=0.2.13",
+]
 train = [
     "accelerate>=1.2.0",
     "lightning>=2.5.0",
