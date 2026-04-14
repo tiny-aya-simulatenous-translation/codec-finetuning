@@ -44,6 +44,12 @@ import numpy as np
 import torch
 import torchaudio
 
+# Prefer soundfile backend — torchcodec is unavailable on aarch64.
+try:
+    torchaudio.set_audio_backend("soundfile")
+except RuntimeError:
+    pass
+
 from eval.reconstruct import load_model
 from train.config_loader import load_config
 

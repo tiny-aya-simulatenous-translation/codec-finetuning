@@ -51,6 +51,12 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import torchaudio
 
+# Prefer soundfile backend — torchcodec is unavailable on aarch64.
+try:
+    torchaudio.set_audio_backend("soundfile")
+except RuntimeError:
+    pass
+
 from train.config_loader import load_config
 
 logger = logging.getLogger(__name__)

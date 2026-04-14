@@ -62,6 +62,13 @@ import numpy as np
 import torch
 import torchaudio
 
+# Prefer soundfile backend — torchcodec is unavailable on aarch64
+# and torchaudio >=2.9 defaults to torchcodec when present.
+try:
+    torchaudio.set_audio_backend("soundfile")
+except RuntimeError:
+    pass  # Backend already set or not available
+
 from eval.codec_registry import get_codec_hooks
 from train.config_loader import load_config
 
