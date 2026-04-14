@@ -7,9 +7,9 @@ license = { text = "MIT" }
 authors = [{ name = "codec-finetuning contributors" }]
 readme = "README.md"
 dependencies = [
-    "torch>=2.9.1",
-    "torchaudio>=2.9.1",
-    "torchvision>=0.24.1",
+    "torch>=2.9.1,<2.10",
+    "torchaudio>=2.9.1,<2.10",
+    "torchvision>=0.24.1,<0.25",
     "moshi>=0.2.13",
     "dualcodec>=0.4.2",
     "kanade-tokenizer",
