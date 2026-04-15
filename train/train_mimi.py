@@ -595,6 +595,30 @@ def train(config: Dict[str, Any]) -> None:
     model = MimiModel.from_pretrained(config["codec"]["pretrained"])
     model = model.cuda()
 
+    # ── Layer freezing ──────────────────────────────────────────
+    # Freeze components based on config.  "decoder_only" freezes
+    # encoder, encoder_transformer, quantizer, and downsample —
+    # only the decoder, decoder_transformer, and upsample train.
+    unfreeze = config["codec"]["training"].get("unfreeze_layers", "all")
+    if unfreeze == "decoder_only":
+        frozen, trainable = [], []
+        for name, param in model.named_parameters():
+            top = name.split(".")[0]
+            if top in ("decoder", "decoder_transformer", "upsample"):
+                trainable.append(name)
+            else:
+                param.requires_grad = False
+                frozen.append(name)
+        logger.info(
+            "Decoder-only mode: %d params frozen, %d trainable "
+            "(%.1fM / %.1fM)",
+            len(frozen), len(trainable),
+            sum(p.numel() for p in model.parameters() if not p.requires_grad) / 1e6,
+            sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6,
+        )
+    elif unfreeze != "all":
+        logger.warning("Unknown unfreeze_layers=%s, training all", unfreeze)
+
     if config["training"].get("compile", False):
         compile_mode = config["training"].get(
             "compile_mode", "default"

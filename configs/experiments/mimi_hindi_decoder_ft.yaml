@@ -1,0 +1,54 @@
+# Decoder-only fine-tuning: Mimi on Hindi
+# Encoder + quantizer frozen, only decoder + decoder_transformer trained.
+# Short run (2000 steps) to measure drift vs baseline.
+
+_bases_:
+  - "../base.yaml"
+  - "../codecs/mimi.yaml"
+  - "../datasets/hindi.yaml"
+
+optimizer:
+  name: "schedulefree_adamw"
+  lr: !!float 1e-4
+  betas: [0.9, 0.95]
+  weight_decay: 0.01
+
+scheduler:
+  name: "cosine"
+  warmup_steps: 200
+  min_lr_ratio: 0.01
+
+training:
+  max_steps: 2000
+  eval_every: 500
+  save_every: 500
+  log_every: 50
+  audio_log_every: 500
+
+codec:
+  latency_ms: 0
+  training:
+    segment_s: 10.0
+    freeze_encoder_steps: 0
+    unfreeze_layers: "decoder_only"
+
+augmentation:
+  preset: "light"
+
+discriminator:
+  warmup_steps: 200
+  lr_ratio: 0.1
+  r1_penalty: 50.0
+
+ema:
+  decay: 0.999
+  start_step: 0
+
+early_stopping:
+  patience: 10
+
+wandb:
+  tags: ["mimi", "hindi", "decoder-only", "ft"]
+  run_name: "mimi-hindi-decoder-ft"
+
+output_dir: "outputs/mimi_hindi_decoder_ft"
