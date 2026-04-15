@@ -216,13 +216,16 @@ def train(config: Dict[str, Any]):
         # Discriminator step (after warmup)
         if step > disc_warmup:
             disc_optimizer.zero_grad()
-            d_loss = discriminator_loss(disc, audio_t.detach(), recon_t.detach())
+            real_logits, _ = disc(audio_t.detach())
+            fake_logits, _ = disc(recon_t.detach())
+            d_loss = discriminator_loss(real_logits, fake_logits)
             d_loss.backward()
             disc_optimizer.step()
 
             # Generator adversarial step
-            real_features, fake_features = disc(audio_t), disc(recon_t)
-            adv_loss = generator_loss(fake_features)
+            _, real_features = disc(audio_t)
+            fake_logits_g, fake_features = disc(recon_t)
+            adv_loss = generator_loss(fake_logits_g)
             fm_loss = feature_matching_loss(real_features, fake_features)
             total_loss = recon_loss + 0.1 * adv_loss + 2.0 * fm_loss
         else:
