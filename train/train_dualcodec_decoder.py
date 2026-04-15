@@ -192,9 +192,11 @@ def train(config: Dict[str, Any]):
 
         audio = batch.to(device)
 
-        # Forward: encode (frozen) → decode (trainable)
+        # Forward: encode (frozen, needs eval mode) → decode (trainable)
+        raw_model.eval()  # DualCodec.encode() asserts not self.training
         with torch.no_grad():
             semantic_codes, acoustic_codes = model.encode(audio)
+        raw_model.train()  # Back to train mode for decoder gradients
 
         # Decode with gradient
         recon = raw_model.decode_from_codes(semantic_codes, acoustic_codes).float()
