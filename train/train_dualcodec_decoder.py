@@ -198,8 +198,12 @@ def train(config: Dict[str, Any]):
             semantic_codes, acoustic_codes = model.encode(audio)
         raw_model.train()  # Back to train mode for decoder gradients
 
-        # Decode with gradient
-        recon = raw_model.decode_from_codes(semantic_codes, acoustic_codes).float()
+        # Decode with gradient — can't use decode_from_codes() because it
+        # has @torch.no_grad().  Call internal ops directly.
+        semantic = raw_model.semantic_vq.from_codes(semantic_codes)[0]
+        if raw_model.decode_semantic_for_codec:
+            semantic = raw_model.convnext_decoder(semantic)
+        recon = raw_model.dac.decode_from_codes(acoustic_codes, semantic).float()
 
         # Match lengths
         min_len = min(audio.shape[-1], recon.shape[-1])
